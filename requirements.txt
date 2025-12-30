@@ -8,3 +8,10 @@ prophet
 lxml
 html5lib
 bs4
+cvxpy
+scipy
+numpy
+statsmodels
+xgboost
+lightgbm
+scikit-learn
