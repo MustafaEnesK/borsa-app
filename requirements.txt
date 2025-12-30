@@ -5,3 +5,6 @@ pandas_ta
 feedparser
 plotly
 prophet
+lxml
+html5lib
+bs4
