@@ -6,12 +6,12 @@ import feedparser
 import plotly.graph_objects as go
 from prophet import Prophet
 from datetime import datetime, timedelta
+import numpy as np
 
 # --- SAYFA AYARLARI ---
 st.set_page_config(page_title="NEÜ Borsa Simülasyonu", page_icon="📈", layout="wide")
 
-# --- SESSION STATE (HAFIZA) AYARLARI ---
-# Sayfa yenilense bile analizin kaybolmaması için hafıza oluşturuyoruz
+# --- SESSION STATE ---
 if 'analiz_aktif' not in st.session_state:
     st.session_state.analiz_aktif = False
 if 'secilen_hisse' not in st.session_state:
@@ -24,7 +24,18 @@ BIST_30 = [
     "KCHOL", "KONTR", "KOZAL", "KRDMD", "OYAKC", "PETKM", "PGSUS", "SAHOL",
     "SASA", "SISE", "TCELL", "THYAO", "TOASO", "TUPRS", "YKBNK"
 ]
-BIST_100_EK = ["AEFES", "AGHOL", "AHGAZ", "AKFGY", "AKSA", "ALGYO", "BERA", "CANTE", "CIMSA", "CWENE", "EGEEN", "ENJSA", "EUPWR", "GESAN", "GWIND", "HALKB", "ISGYO", "IZMDC", "KLSER", "MAVI", "MGROS", "MIATK", "ODAS", "OTKAR", "QUAGR", "REEDR", "SKBNK", "SMRTG", "SOKM", "TAVHL", "TKFEN", "TTKOM", "ULKER", "VAKBN", "VESBE", "YEOTK", "YYLGD", "ZOREN"]
+
+# Potansiyelli, Büyüme Odaklı veya Gözden Kaçabilen Hisseler
+KESIF_LISTESI = [
+    "ALFAS", "BIOEN", "BOBET", "BURCE", "CVKMD", "CWENE", "DAPGM", 
+    "EGEEN", "EUPWR", "FROTO", "GENIL", "GESAN", "GWIND", "HKTM", 
+    "HUNER", "INVEO", "IZMDC", "JANTS", "KCAER", "KLKIM", "KNFRT", 
+    "MIATK", "MOBTL", "NATEN", "ODAS", "OTKAR", "OYLUM", "PENTA", 
+    "QUAGR", "RUBNS", "SDTTR", "SMRTG", "SNGYO", "SOKM", "SUWEN", 
+    "TATGD", "VBTYZ", "YEOTK", "YYLGD"
+]
+
+BIST_100_EK = ["AEFES", "AGHOL", "AHGAZ", "AKFGY", "AKSA", "ALGYO", "BERA", "CANTE", "CIMSA", "ENJSA", "HALKB", "ISGYO", "MAVI", "MGROS", "TKFEN", "TTKOM", "ULKER", "VAKBN", "VESBE", "ZOREN"]
 BIST_100 = sorted(list(set(BIST_30 + BIST_100_EK)))
 
 # --- FONKSİYONLAR ---
@@ -49,7 +60,8 @@ def temel_bilgileri_getir(sembol):
         return {
             "F/K": info.get("trailingPE", "Yok"),
             "PD/DD": info.get("priceToBook", "Yok"),
-            "Temettü": info.get("dividendYield", 0)
+            "Temettü": info.get("dividendYield", 0),
+            "Beta": info.get("beta", "Yok") # Risk ölçümü için Beta
         }
     except:
         return None
@@ -87,14 +99,18 @@ with st.sidebar:
     st.divider()
 
     st.header("🔍 Hisse Seçimi")
-    secim_modu = st.radio("Liste Seçiniz:", ["Manuel Arama", "BIST 30", "BIST 100"])
+    # YENİ KATEGORİ EKLENDİ
+    secim_modu = st.radio("Kategori:", ["💎 Gizli Fırsatlar (Keşif)", "BIST 30", "BIST 100", "Manuel Arama"])
     
     if secim_modu == "Manuel Arama":
         hisse_input = st.text_input("Hisse Kodu Girin", "THYAO").upper()
     elif secim_modu == "BIST 30":
-        hisse_input = st.selectbox("BIST 30 Hissesi Seç", BIST_30)
+        hisse_input = st.selectbox("BIST 30 Devleri", BIST_30)
+    elif secim_modu == "💎 Gizli Fırsatlar (Keşif)":
+        hisse_input = st.selectbox("Potansiyelli Yıldızlar", sorted(KESIF_LISTESI))
+        st.caption("ℹ️ Bu liste büyüme potansiyeli yüksek teknoloji, enerji ve sanayi hisselerinden seçilmiştir.")
     else:
-        hisse_input = st.selectbox("BIST 100 Hissesi Seç", BIST_100)
+        hisse_input = st.selectbox("BIST 100 Geneli", BIST_100)
     
     st.subheader("🎨 Grafik Seçenekleri")
     goster_sma50 = st.checkbox("SMA 50 (Turuncu)", value=True)
@@ -102,7 +118,6 @@ with st.sidebar:
     goster_bollinger = st.checkbox("Bollinger Bantları", value=False)
     
     st.divider()
-    # Butona basınca Session State güncellenir
     if st.button("Analizi Başlat 🚀", type="primary", use_container_width=True):
         st.session_state.analiz_aktif = True
         st.session_state.secilen_hisse = hisse_input
@@ -111,35 +126,50 @@ with st.sidebar:
 # --- ANA SAYFA ---
 st.title("📈 Borsa İstanbul Yapay Zeka Analisti")
 
-# Eğer butona basıldıysa VE hisse seçildiyse ekranı göster
 if st.session_state.analiz_aktif:
     hisse_kodu = st.session_state.secilen_hisse
     saf_kod = hisse_kodu.replace(".IS", "")
     
     st.caption(f"Analiz Edilen Hisse: **{hisse_kodu}**")
     
-    with st.spinner('Veriler ve Yapay Zeka Tahminleri Hazırlanıyor...'):
+    with st.spinner('Piyasa verileri taranıyor...'):
         df = verileri_getir(hisse_kodu)
         info = temel_bilgileri_getir(hisse_kodu)
         
         if df.empty:
             st.error("Veri bulunamadı! Lütfen kodu kontrol edin.")
         else:
-            # ÜST KARTLAR
+            # --- RİSK HESAPLAMASI (Volatilite) ---
+            # Son 30 günlük getiri oynaklığı
+            getiriler = df['Close'].pct_change().dropna()
+            volatilite = getiriler.std() * (252 ** 0.5) * 100 # Yıllıklandırılmış Volatilite
+            
+            risk_durumu = "ORTA"
+            risk_renk = "off"
+            if volatilite > 50: 
+                risk_durumu = "YÜKSEK ⚡"
+                risk_renk = "inverse"
+            elif volatilite < 20: 
+                risk_durumu = "DÜŞÜK 🛡️"
+                risk_renk = "normal"
+
+            # --- ÜST KARTLAR ---
             son_fiyat = df['Close'].iloc[-1]
             degisim = ((son_fiyat - df['Close'].iloc[-2]) / df['Close'].iloc[-2]) * 100
             
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Son Fiyat", f"{son_fiyat:.2f} ₺", f"%{degisim:.2f}")
+            
+            c2.metric("Risk Seviyesi", risk_durumu, f"%{volatilite:.1f} Volatilite", delta_color=risk_renk)
+            
             if info:
                 temettu = info['Temettü']
                 fmt_temettu = f"%{temettu*100:.2f}" if isinstance(temettu, float) else "-"
-                c2.metric("F/K", f"{info['F/K']}")
-                c3.metric("PD/DD", f"{info['PD/DD']}")
-                c4.metric("Temettü", fmt_temettu)
+                c3.metric("F/K", f"{info['F/K']}")
+                c4.metric("PD/DD", f"{info['PD/DD']}")
 
             # GRAFİK
-            st.subheader(f"📊 {saf_kod} Teknik Analiz")
+            st.subheader(f"📊 {saf_kod} Teknik Görünüm")
             fig = go.Figure()
             fig.add_trace(go.Candlestick(x=df['Date'], open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Fiyat'))
             if goster_sma50:
@@ -171,7 +201,7 @@ if st.session_state.analiz_aktif:
 
                 with col_tahmin:
                     st.subheader("🔮 Yapay Zeka Beklentisi")
-                    st.info("AI modelinin geçmiş verilere dayanarak yaptığı fiyat öngörüsüdür.")
+                    st.info("Model, geçmiş trendleri analiz ederek olası senaryoyu çizer.")
                     t_data = {
                         "Vade": ["15 Gün Sonra", "30 Gün Sonra", "60 Gün Sonra"],
                         "Tahmini Fiyat": [f"{t15:.2f} ₺", f"{t30:.2f} ₺", f"{t60:.2f} ₺"],
@@ -190,9 +220,8 @@ if st.session_state.analiz_aktif:
 
                 with col_sim:
                     st.subheader("💰 Yatırım Simülatörü")
-                    st.success("Cebindeki parayı gir, Enter'a bas.")
+                    st.success("Tutar girip Enter'a basarak sonucu gör.")
                     
-                    # BURASI DÜZELTİLDİ: Session State sayesinde burası çalışınca sayfa kapanmayacak
                     ana_para = st.number_input("Yatırılacak Tutar (TL)", min_value=1000, value=10000, step=1000)
                     
                     st.write(f"**{ana_para:,.0f} TL** ile bugün {saf_kod} alınırsa:")
@@ -224,4 +253,4 @@ if st.session_state.analiz_aktif:
                 for i, h in enumerate(news):
                     cols[i % 2].info(f"[{h.title}]({h.link})")
 else:
-    st.info("👈 Analize başlamak için sol menüden bir hisse seçin ve 'Analizi Başlat' butonuna basın.")
+    st.info("👈 Analize başlamak için sol menüden kategori ve hisse seçip 'Analizi Başlat' butonuna basın.")
