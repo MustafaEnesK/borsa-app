@@ -4,283 +4,292 @@ import pandas as pd
 import pandas_ta as ta
 import feedparser
 import plotly.graph_objects as go
+import plotly.express as px
 from prophet import Prophet
-from datetime import datetime, timedelta
-import requests
+import cvxpy as cp
+import numpy as np
+import statsmodels.api as sm
+from xgboost import XGBClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="NEÜ Borsa Simülasyonu", page_icon="📈", layout="wide")
+st.set_page_config(page_title="NEÜ Finansal Zeka", page_icon="🧠", layout="wide")
 
 # --- SESSION STATE ---
-if 'analiz_aktif' not in st.session_state:
-    st.session_state.analiz_aktif = False
-if 'secilen_hisse' not in st.session_state:
-    st.session_state.secilen_hisse = ""
+if 'analiz_aktif' not in st.session_state: st.session_state.analiz_aktif = False
+if 'secilen_hisse' not in st.session_state: st.session_state.secilen_hisse = ""
 
-# --- OTOMATİK LİSTE GÜNCELLEYİCİ (YENİ!) ---
-@st.cache_data(ttl=86400) # 24 Saatte bir günceller
-def bist_listesini_guncelle():
-    """
-    İnternetten güncel BIST 100 listesini çeker.
-    Hata alırsak yedek listeyi kullanır.
-    """
-    yedek_liste = [
-        "AKBNK", "ALARK", "ARCLK", "ASELS", "ASTOR", "BIMAS", "BRSAN", "DOAS",
-        "EKGYO", "ENKAI", "EREGL", "FROTO", "GARAN", "GUBRF", "HEKTS", "ISCTR",
-        "KCHOL", "KONTR", "KOZAL", "KRDMD", "OYAKC", "PETKM", "PGSUS", "SAHOL",
-        "SASA", "SISE", "TCELL", "THYAO", "TOASO", "TUPRS", "YKBNK", "AEFES", 
-        "AGHOL", "AHGAZ", "AKFGY", "AKSA", "ALGYO", "BERA", "CANTE", "CIMSA", 
-        "EGEEN", "ENJSA", "EUPWR", "GESAN", "GWIND", "HALKB", "ISGYO", "IZMDC", 
-        "KCAER", "MAVI", "MGROS", "MIATK", "ODAS", "OTKAR", "QUAGR", "REEDR", 
-        "SKBNK", "SMRTG", "SOKM", "TAVHL", "TKFEN", "TTKOM", "ULKER", "VAKBN", 
-        "VESBE", "YEOTK", "YYLGD", "ZOREN", "ALFAS", "BIOEN", "BOBET", "CWENE",
-        "EBEBK", "EUREN", "GENIL", "KMPUR", "KONYA", "KOPOL", "KOZAA", "KZBGY",
-        "OTKAR", "OYAKC", "PENTA", "SDTTR", "SNGYO", "SUWEN", "TUKAS", "TURSG"
-    ]
-    
+# --- FONKSİYONLAR ---
+
+@st.cache_data(ttl=86400)
+def bist_listesini_getir():
+    yedek = ["AKBNK", "ALARK", "ARCLK", "ASELS", "ASTOR", "BIMAS", "BRSAN", "DOAS", "EKGYO", "ENKAI", "EREGL", "FROTO", "GARAN", "GUBRF", "HEKTS", "ISCTR", "KCHOL", "KONTR", "KOZAL", "KRDMD", "OYAKC", "PETKM", "PGSUS", "SAHOL", "SASA", "SISE", "TCELL", "THYAO", "TOASO", "TUPRS", "YKBNK"]
     try:
-        # Wikipedia'daki BIST 100 tablosunu okumayı dener
         url = "https://tr.wikipedia.org/wiki/BIST_100_endeksine_dahil_hisseler"
         tablolar = pd.read_html(url)
-        
-        # Genelde ilk tablo hisse listesidir
-        df_wiki = tablolar[0]
-        
-        # 'Kod' sütununu bul ve temizle
-        if 'Kod' in df_wiki.columns:
-            guncel_liste = df_wiki['Kod'].tolist()
-            # Kodların temiz olduğundan emin ol (Boşlukları sil, .IS yoksa eklemiyoruz burada, aşağıda ekleniyor)
-            guncel_liste = [str(x).strip().upper() for x in guncel_liste]
-            return sorted(list(set(guncel_liste))) # Alfabetik sırala
-        else:
-            return sorted(yedek_liste)
-            
-    except Exception as e:
-        # İnternet yoksa veya site değiştiyse yedek listeyi döndür
-        return sorted(yedek_liste)
+        df = tablolar[0]
+        if 'Kod' in df.columns:
+            return sorted([str(x).strip().upper() for x in df['Kod'].tolist()])
+        return sorted(yedek)
+    except: return sorted(yedek)
 
-# Listeleri Yükle
-TUM_HISSELER = bist_listesini_guncelle()
-BIST_30_YEDEK = [x for x in TUM_HISSELER if x in ["AKBNK", "GARAN", "THYAO", "ASELS", "EREGL", "BIMAS", "TUPRS", "KCHOL", "SAHOL", "SISE", "ISCTR", "YKBNK", "FROTO", "TOASO", "TCELL", "PETKM", "KOZAL", "KRDMD", "ENKAI", "PGSUS", "ASTOR", "SASA", "HEKTS", "ALARK", "EKGYO", "GUBRF", "OYAKC", "KONTR", "DOAS", "BRSAN"]]
+TUM_HISSELER = bist_listesini_getir()
 
-# --- DİĞER FONKSİYONLAR ---
 @st.cache_data(ttl=600) 
-def verileri_getir(sembol):
-    if not sembol.endswith(".IS"):
-        sembol += ".IS"
-    df = yf.download(sembol, period="2y", interval="1d", progress=False, auto_adjust=True)
+def veri_cek(kod):
+    if not kod.endswith(".IS"): kod += ".IS"
+    df = yf.download(kod, period="2y", interval="1d", progress=False, auto_adjust=True)
     if df.empty: return pd.DataFrame()
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+    if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
     df.reset_index(inplace=True)
     return df
 
 @st.cache_data(ttl=3600)
-def temel_bilgileri_getir(sembol):
-    if not sembol.endswith(".IS"):
-        sembol += ".IS"
+def temel_analiz_getir(kod):
+    if not kod.endswith(".IS"): kod += ".IS"
     try:
-        hisse = yf.Ticker(sembol)
-        info = hisse.info
-        return {
-            "F/K": info.get("trailingPE", "Yok"),
-            "PD/DD": info.get("priceToBook", "Yok"),
-            "Temettü": info.get("dividendYield", 0),
-            "Beta": info.get("beta", "Yok")
-        }
-    except:
-        return None
+        info = yf.Ticker(kod).info
+        return {"F/K": info.get("trailingPE", None), "PD/DD": info.get("priceToBook", None), "Beta": info.get("beta", None), "Temettü": info.get("dividendYield", None)}
+    except: return None
 
-def prophet_tahmin(df, gun_sayisi=65):
-    df_prophet = df[['Date', 'Close']].rename(columns={'Date': 'ds', 'Close': 'y'})
-    m = Prophet(daily_seasonality=True)
-    m.fit(df_prophet)
-    future = m.make_future_dataframe(periods=gun_sayisi)
-    forecast = m.predict(future)
-    return forecast
+# --- GELİŞMİŞ MODELLER ---
 
-def haberleri_getir(saf_kod):
-    try:
-        rss_url = f"https://news.google.com/rss/search?q={saf_kod}+hisse&hl=tr&gl=TR&ceid=TR:tr"
-        feed = feedparser.parse(rss_url)
-        return feed.entries[:4]
-    except:
-        return []
+def xgboost_sinyal(df):
+    """
+    XGBoost kullanarak yarın hissenin yükselip yükselmeyeceğini tahmin eder.
+    """
+    data = df.copy()
+    # Feature Engineering (İndikatörler)
+    data['RSI'] = ta.rsi(data['Close'], length=14)
+    data['SMA_Diff'] = data['Close'] - ta.sma(data['Close'], length=50)
+    data['Return'] = data['Close'].pct_change()
+    data['Target'] = (data['Close'].shift(-1) > data['Close']).astype(int) # Yarın artarsa 1, düşerse 0
+    
+    data.dropna(inplace=True)
+    
+    features = ['RSI', 'SMA_Diff', 'Return', 'Volume']
+    X = data[features]
+    y = data['Target']
+    
+    # Son gün hariç eğitim, son gün tahmin
+    X_train, X_test, y_train, y_test = train_test_split(X[:-1], y[:-1], test_size=0.2, shuffle=False)
+    
+    model = XGBClassifier(eval_metric='logloss', use_label_encoder=False)
+    model.fit(X_train, y_train)
+    
+    # Başarı oranı (Test seti)
+    acc = accuracy_score(y_test, model.predict(X_test))
+    
+    # Gelecek Tahmini (Bugünün verisiyle yarını tahmin et)
+    last_row = X.iloc[[-1]]
+    prediction = model.predict(last_row)[0]
+    prob = model.predict_proba(last_row)[0]
+    
+    return prediction, prob, acc
 
-# --- YAN MENÜ ---
+def statsmodels_analiz(df):
+    """
+    Zaman serisi ayrıştırması (Trend, Mevsimsellik)
+    """
+    df_ts = df.set_index('Date')['Close'].asfreq('B') # İş günleri
+    df_ts = df_ts.fillna(method='ffill')
+    res = sm.tsa.seasonal_decompose(df_ts, model='additive', period=20) # Aylık periyot
+    return res
+
+def markowitz_optimize(hisseler, butce):
+    if len(hisseler) < 2: return None, "En az 2 hisse seç."
+    
+    # Veri Hazırlığı
+    data = pd.DataFrame()
+    for h in hisseler:
+        try:
+            df = veri_cek(h)
+            if not df.empty: data[h] = df.set_index('Date')['Close']
+        except: continue
+    
+    data.dropna(inplace=True)
+    if data.empty: return None, "Veri yetersiz."
+    
+    # Markowitz (CVXPY)
+    mu = data.pct_change().mean().values
+    sigma = data.pct_change().cov().values
+    n = len(data.columns)
+    
+    w = cp.Variable(n)
+    risk = cp.quad_form(w, sigma)
+    # Amaç: Riski minimize et, toplam ağırlık 1 olsun, short yok
+    prob = cp.Problem(cp.Minimize(risk), [cp.sum(w) == 1, w >= 0])
+    prob.solve()
+    
+    return dict(zip(data.columns, np.round(w.value, 3))), None
+
+# --- YAN MENÜ (DÜZENLİ) ---
 with st.sidebar:
+    # 1. KİMLİK KARTI
     st.markdown("""
-    <div style="background-color:#1E1E1E; padding:15px; border-radius:10px; border:1px solid #333;">
-        <h3 style="color:white; margin:0;">Mustafa Enes KORKMAZOĞLU</h3>
-        <p style="color:#888; margin:5px 0;">🎓 NEÜ İktisat 3. Sınıf</p>
-        <p style="color:#00CC96; font-weight:bold;">🚀 Borsa Simülasyonu V4.0</p>
+    <div style="background-color:#0E1117; padding:15px; border-radius:10px; border:1px solid #262730; text-align:center;">
+        <h3 style="color:#FAFAFA; margin:0;">Mustafa Enes KORKMAZOĞLU</h3>
+        <p style="color:#9CA0A6; font-size:12px; margin:5px 0;">NEÜ İktisat 3. Sınıf</p>
+        <div style="background-color:#262730; color:#00CC96; padding:5px; border-radius:5px; font-weight:bold; font-size:12px;">
+            V6.0 ULTIMATE
+        </div>
     </div>
     """, unsafe_allow_html=True)
     
-    st.write("") 
-    st.link_button("👔 LinkedIn Profilim", "https://www.linkedin.com/in/mustafa-enes-korkmazoglu", use_container_width=True)
-    st.link_button("📸 Instagram: @mustafaenesk_", "https://www.instagram.com/mustafaenesk_", use_container_width=True)
-
+    st.write("")
+    col_social1, col_social2 = st.columns(2)
+    with col_social1: st.link_button("👔 LinkedIn", "https://www.linkedin.com/in/mustafa-enes-korkmazoglu", use_container_width=True)
+    with col_social2: st.link_button("📸 Instagram", "https://www.instagram.com/mustafaenesk_", use_container_width=True)
     st.divider()
 
-    st.header("🔍 Hisse Seçimi")
-    
-    # Kullanıcıya bilgi veriyoruz
-    if len(TUM_HISSELER) > 90:
-        st.success(f"✅ Sistem Online: {len(TUM_HISSELER)} Hisse Güncellendi")
-    else:
-        st.warning("⚠️ Otomatik Güncelleme Kapalı (Yedek Liste Aktif)")
-
-    secim_modu = st.radio("Kategori:", ["💎 Gizli Fırsatlar (Keşif)", "BIST 30", "Tüm Hisseler (Otomatik)", "Manuel Arama"])
-    
-    if secim_modu == "Manuel Arama":
-        hisse_input = st.text_input("Hisse Kodu Girin", "THYAO").upper()
-    elif secim_modu == "BIST 30":
-        hisse_input = st.selectbox("BIST 30 Devleri", sorted(BIST_30_YEDEK))
-    elif secim_modu == "💎 Gizli Fırsatlar (Keşif)":
-        # Keşif listesini de dinamik filtreden geçirebiliriz ama şimdilik sabit kalsın
-        KESIF = ["ALFAS", "BIOEN", "CWENE", "EGEEN", "EUPWR", "GESAN", "GWIND", "KONYA", "MIATK", "ODAS", "OTKAR", "OYAKC", "PENTA", "QUAGR", "REEDR", "SDTTR", "SMRTG", "SOKM", "YEOTK"]
-        hisse_input = st.selectbox("Potansiyelli Yıldızlar", sorted(KESIF))
-    else:
-        hisse_input = st.selectbox("BIST 100 Geneli", TUM_HISSELER)
-    
-    st.subheader("🎨 Grafik Seçenekleri")
-    goster_sma50 = st.checkbox("SMA 50 (Turuncu)", value=True)
-    goster_sma200 = st.checkbox("SMA 200 (Mavi)", value=True)
-    goster_bollinger = st.checkbox("Bollinger Bantları", value=False)
-    
+    # 2. MODÜL SEÇİMİ (RADYO BUTON İLE DÜZENLİ)
+    st.header("📲 Modül Seçimi")
+    modul = st.radio(
+        "Çalışma Alanı:",
+        ["📈 Hisse Analiz (Detaylı)", "⚖️ Portföy Optimize (CVXPY)", "💎 Keşif Listesi"],
+        captions=["AI, Ekonometri ve Teknik", "Markowitz Modeli", "Potansiyelli Hisseler"]
+    )
     st.divider()
-    if st.button("Analizi Başlat 🚀", type="primary", use_container_width=True):
+
+    # 3. DİNAMİK AYARLAR (Modüle göre değişir)
+    if modul == "📈 Hisse Analiz (Detaylı)":
+        st.subheader("Hisse Ayarları")
+        liste_tipi = st.selectbox("Liste Kaynağı", ["BIST 30", "BIST 100", "Manuel"])
+        
+        if liste_tipi == "Manuel": secilen = st.text_input("Kod", "THYAO").upper()
+        elif liste_tipi == "BIST 30": secilen = st.selectbox("Hisse", sorted(["AKBNK", "THYAO", "ASELS", "GARAN", "EREGL", "TUPRS", "KCHOL"])) # Örnek
+        else: secilen = st.selectbox("Hisse", TUM_HISSELER)
+        
+        btn_calistir = st.button("Analiz Et 🚀", type="primary", use_container_width=True)
+
+    elif modul == "⚖️ Portföy Optimize (CVXPY)":
+        st.subheader("Portföy Ayarları")
+        portfoy_hisseleri = st.multiselect("Hisseler (Min 2)", TUM_HISSELER, default=["THYAO", "ASELS", "GARAN"])
+        butce = st.number_input("Bütçe (TL)", 1000, 1000000, 50000)
+        btn_calistir = st.button("Optimize Et ⚖️", type="primary", use_container_width=True)
+
+    elif modul == "💎 Keşif Listesi":
+        st.info("Büyüme potansiyeli yüksek ve temettü hisseleri.")
+        kesif_hisseleri = ["ALFAS", "EGEEN", "FROTO", "GESAN", "KONTR", "MIATK", "YEOTK", "SMRTG"]
+        secilen = st.selectbox("Hisse Seç", kesif_hisseleri)
+        btn_calistir = st.button("İncele 🔍", type="primary", use_container_width=True)
+
+
+# --- ANA EKRAN ---
+st.title("🧠 NEÜ Finansal Zeka Platformu")
+
+# --- MODÜL 1 & 3: HİSSE ANALİZİ ---
+if modul in ["📈 Hisse Analiz (Detaylı)", "💎 Keşif Listesi"]:
+    if btn_calistir:
         st.session_state.analiz_aktif = True
-        st.session_state.secilen_hisse = hisse_input
+        st.session_state.secilen_hisse = secilen
         st.cache_data.clear()
 
-# --- ANA SAYFA ---
-st.title("📈 Borsa İstanbul Yapay Zeka Analisti")
-
-if st.session_state.analiz_aktif:
-    hisse_kodu = st.session_state.secilen_hisse
-    saf_kod = hisse_kodu.replace(".IS", "")
-    
-    st.caption(f"Analiz Edilen Hisse: **{hisse_kodu}**")
-    
-    with st.spinner('Piyasa verileri taranıyor...'):
-        df = verileri_getir(hisse_kodu)
-        info = temel_bilgileri_getir(hisse_kodu)
+    if st.session_state.analiz_aktif:
+        kod = st.session_state.secilen_hisse
         
-        if df.empty:
-            st.error("Veri bulunamadı! Lütfen kodu kontrol edin.")
-        else:
-            # RİSK
-            getiriler = df['Close'].pct_change().dropna()
-            volatilite = getiriler.std() * (252 ** 0.5) * 100
+        with st.spinner("Veriler çekiliyor, XGBoost ve Ekonometrik modeller çalışıyor..."):
+            df = veri_cek(kod)
+            temel = temel_analiz_getir(kod)
             
-            risk_durumu = "ORTA"
-            risk_renk = "off"
-            if volatilite > 50: 
-                risk_durumu = "YÜKSEK ⚡"
-                risk_renk = "inverse"
-            elif volatilite < 20: 
-                risk_durumu = "DÜŞÜK 🛡️"
-                risk_renk = "normal"
-
-            # ÜST KARTLAR
-            son_fiyat = df['Close'].iloc[-1]
-            degisim = ((son_fiyat - df['Close'].iloc[-2]) / df['Close'].iloc[-2]) * 100
-            
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Son Fiyat", f"{son_fiyat:.2f} ₺", f"%{degisim:.2f}")
-            c2.metric("Risk Seviyesi", risk_durumu, f"%{volatilite:.1f} Volatilite", delta_color=risk_renk)
-            
-            if info:
-                temettu = info['Temettü']
-                fmt_temettu = f"%{temettu*100:.2f}" if isinstance(temettu, float) else "-"
-                c3.metric("F/K", f"{info['F/K']}")
-                c4.metric("PD/DD", f"{info['PD/DD']}")
-
-            # GRAFİK
-            st.subheader(f"📊 {saf_kod} Teknik Görünüm")
-            fig = go.Figure()
-            fig.add_trace(go.Candlestick(x=df['Date'], open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Fiyat'))
-            if goster_sma50:
-                df['SMA50'] = ta.sma(df['Close'], length=50)
-                fig.add_trace(go.Scatter(x=df['Date'], y=df['SMA50'], line=dict(color='orange', width=1), name='SMA 50'))
-            if goster_sma200:
-                df['SMA200'] = ta.sma(df['Close'], length=200)
-                fig.add_trace(go.Scatter(x=df['Date'], y=df['SMA200'], line=dict(color='blue', width=1), name='SMA 200'))
-            if goster_bollinger:
-                bb = ta.bbands(df['Close'], length=20, std=2)
-                if bb is not None:
-                    fig.add_trace(go.Scatter(x=df['Date'], y=bb[bb.columns[0]], line=dict(color='rgba(255, 255, 255, 0.3)', width=1, dash='dot'), name='Alt Bant'))
-                    fig.add_trace(go.Scatter(x=df['Date'], y=bb[bb.columns[2]], line=dict(color='rgba(255, 255, 255, 0.3)', width=1, dash='dot'), fill='tonexty', fillcolor='rgba(255, 255, 255, 0.05)', name='Üst Bant'))
-            fig.update_layout(height=500, xaxis_rangeslider_visible=False, template="plotly_dark", margin=dict(l=0, r=0, t=30, b=0))
-            st.plotly_chart(fig, use_container_width=True)
-
-            # SİMÜLATÖR VE TAHMİN
-            st.divider()
-            col_tahmin, col_sim = st.columns([1, 1])
-
-            try:
-                fcast = prophet_tahmin(df, 65)
-                future_data = fcast[fcast['ds'] > df['Date'].iloc[-1]].copy()
-                future_data.reset_index(drop=True, inplace=True)
+            if df.empty:
+                st.error("Veri bulunamadı.")
+            else:
+                # ÜST METRİKLER
+                son = df['Close'].iloc[-1]
+                degisim = ((son - df['Close'].iloc[-2]) / df['Close'].iloc[-2]) * 100
                 
-                t15 = future_data.iloc[14]['yhat'] if len(future_data) > 14 else 0
-                t30 = future_data.iloc[29]['yhat'] if len(future_data) > 29 else 0
-                t60 = future_data.iloc[59]['yhat'] if len(future_data) > 59 else 0
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Fiyat", f"{son:.2f} ₺", f"%{degisim:.2f}")
+                if temel:
+                    c2.metric("F/K", temel['F/K'] if temel['F/K'] else "-")
+                    c3.metric("PD/DD", temel['PD/DD'] if temel['PD/DD'] else "-")
+                    c4.metric("Beta (Risk)", f"{temel['Beta']:.2f}" if temel['Beta'] else "-")
 
-                with col_tahmin:
-                    st.subheader("🔮 Yapay Zeka Beklentisi")
-                    st.info("Model, geçmiş trendleri analiz ederek olası senaryoyu çizer.")
-                    t_data = {
-                        "Vade": ["15 Gün Sonra", "30 Gün Sonra", "60 Gün Sonra"],
-                        "Tahmini Fiyat": [f"{t15:.2f} ₺", f"{t30:.2f} ₺", f"{t60:.2f} ₺"],
-                        "Beklenen Değişim": [
-                            f"%{((t15-son_fiyat)/son_fiyat)*100:.2f}",
-                            f"%{((t30-son_fiyat)/son_fiyat)*100:.2f}",
-                            f"%{((t60-son_fiyat)/son_fiyat)*100:.2f}"
-                        ]
-                    }
-                    st.table(pd.DataFrame(t_data))
+                # --- SEKMELİ YAPI (TIDY UI) ---
+                tab1, tab2, tab3, tab4 = st.tabs(["📊 Teknik & Grafik", "🤖 Yapay Zeka (XGBoost)", "📉 Ekonometri (Stats)", "📰 Haberler"])
+                
+                with tab1: # TEKNİK
+                    fig = go.Figure()
+                    fig.add_trace(go.Candlestick(x=df['Date'], open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Fiyat'))
+                    fig.add_trace(go.Scatter(x=df['Date'], y=ta.sma(df['Close'], 50), line=dict(color='orange'), name='SMA 50'))
+                    fig.update_layout(height=500, template="plotly_dark", xaxis_rangeslider_visible=False)
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                with tab2: # AI & XGBOOST
+                    col_ai1, col_ai2 = st.columns([1,2])
                     
-                    fig_mini = go.Figure()
-                    fig_mini.add_trace(go.Scatter(x=future_data['ds'], y=future_data['yhat'], mode='lines', line=dict(color='#00CC96', width=2), name='Tahmin'))
-                    fig_mini.update_layout(height=200, margin=dict(l=0,r=0,t=0,b=0), template="plotly_dark", showlegend=False)
-                    st.plotly_chart(fig_mini, use_container_width=True)
+                    pred, prob, acc = xgboost_sinyal(df)
+                    guven = max(prob) * 100
+                    yon = "YÜKSELİŞ 🚀" if pred == 1 else "DÜŞÜŞ 🔻"
+                    renk = "green" if pred == 1 else "red"
+                    
+                    with col_ai1:
+                        st.subheader("XGBoost Sinyali")
+                        st.markdown(f"<h2 style='color:{renk};'>{yon}</h2>", unsafe_allow_html=True)
+                        st.write(f"**Güven:** %{guven:.2f}")
+                        st.write(f"**Model Başarısı:** %{acc*100:.1f}")
+                        st.caption("*Gradient Boosting algoritması teknik indikatörleri yorumlayarak yarınki yönü tahmin eder.")
+                    
+                    with col_ai2:
+                        st.subheader("Prophet (Uzun Vade)")
+                        m = Prophet()
+                        m.fit(df.rename(columns={'Date':'ds', 'Close':'y'}))
+                        future = m.make_future_dataframe(periods=30)
+                        fcast = m.predict(future)
+                        fig_p = go.Figure()
+                        fig_p.add_trace(go.Scatter(x=fcast['ds'], y=fcast['yhat'], line=dict(color='cyan'), name='Tahmin'))
+                        fig_p.add_trace(go.Scatter(x=df['Date'], y=df['Close'], line=dict(color='white', width=1), name='Gerçek'))
+                        fig_p.update_layout(height=350, template="plotly_dark", margin=dict(l=0,r=0,t=0,b=0))
+                        st.plotly_chart(fig_p, use_container_width=True)
 
-                with col_sim:
-                    st.subheader("💰 Yatırım Simülatörü")
-                    st.success("Tutar girip Enter'a basarak sonucu gör.")
+                with tab3: # EKONOMETRİ (STATSMODELS)
+                    st.subheader("Zaman Serisi Ayrıştırması (Decomposition)")
+                    st.info("Hissenin fiyatını Trend, Mevsimsellik ve Rassal (Gürültü) bileşenlerine ayırır.")
+                    res = statsmodels_analiz(df)
                     
-                    ana_para = st.number_input("Yatırılacak Tutar (TL)", min_value=1000, value=10000, step=1000)
+                    c_s1, c_s2 = st.columns(2)
+                    with c_s1:
+                        st.write("**Trend (Ana Yön)**")
+                        st.line_chart(res.trend, color="#FFA500")
+                    with c_s2:
+                        st.write("**Mevsimsellik (Döngü)**")
+                        st.line_chart(res.seasonal, color="#00CC96")
                     
-                    st.write(f"**{ana_para:,.0f} TL** ile bugün {saf_kod} alınırsa:")
-                    
-                    kar15 = ana_para * (t15 / son_fiyat)
-                    kar30 = ana_para * (t30 / son_fiyat)
-                    kar60 = ana_para * (t60 / son_fiyat)
-                    
-                    c_sim1, c_sim2, c_sim3 = st.columns(3)
-                    
-                    renk15 = "off" if kar15 > ana_para else "inverse"
-                    c_sim1.metric("15 Gün", f"{kar15:,.0f} ₺", f"{kar15-ana_para:,.0f} ₺", delta_color=renk15)
-                    
-                    renk30 = "off" if kar30 > ana_para else "inverse"
-                    c_sim2.metric("30 Gün", f"{kar30:,.0f} ₺", f"{kar30-ana_para:,.0f} ₺", delta_color=renk30)
-                    
-                    renk60 = "off" if kar60 > ana_para else "inverse"
-                    c_sim3.metric("60 Gün", f"{kar60:,.0f} ₺", f"{kar60-ana_para:,.0f} ₺", delta_color=renk60)
+                    st.write("**Resid (Rassal/Gürültü)**")
+                    st.line_chart(res.resid, color="#FF4B4B")
 
-            except Exception as e:
-                st.warning(f"Simülasyon hesaplanamadı: {e}")
+                with tab4: # HABERLER
+                    news = feedparser.parse(f"https://news.google.com/rss/search?q={kod}+hisse&hl=tr&gl=TR&ceid=TR:tr").entries[:5]
+                    if news:
+                        for n in news: st.info(f"[{n.title}]({n.link})")
+                    else: st.write("Haber bulunamadı.")
 
-            # HABERLER
-            st.divider()
-            st.subheader("📰 Güncel Haberler")
-            cols = st.columns(2)
-            news = haberleri_getir(saf_kod)
-            if news:
-                for i, h in enumerate(news):
-                    cols[i % 2].info(f"[{h.title}]({h.link})")
+# --- MODÜL 2: PORTFÖY OPTİMİZASYONU ---
+elif modul == "⚖️ Portföy Optimize (CVXPY)":
+    if btn_calistir:
+        with st.spinner("Markowitz (Mean-Variance) Modeli Çalışıyor..."):
+            agirliklar, hata = markowitz_optimize(portfoy_hisseleri, butce)
+            
+            if hata: st.error(hata)
+            else:
+                st.success("✅ Optimum Dağılım Hesaplandı!")
+                c_p1, c_p2 = st.columns([1,1])
+                
+                # Sadece %1 üzeri olanları al
+                df_pie = pd.DataFrame(list(agirliklar.items()), columns=['Hisse', 'Oran'])
+                df_pie = df_pie[df_pie['Oran'] > 0.01]
+                
+                with c_p1:
+                    fig_pie = px.pie(df_pie, values='Oran', names='Hisse', title='İdeal Cüzdan (Risk Minimize)', hole=0.4)
+                    st.plotly_chart(fig_pie, use_container_width=True)
+                
+                with c_p2:
+                    st.subheader("💰 Alım Emri")
+                    st.write(f"**{butce:,.0f} TL** bütçe ile önerilen dağılım:")
+                    for idx, row in df_pie.iterrows():
+                        tutar = butce * row['Oran']
+                        st.write(f"• **{row['Hisse']}**: %{row['Oran']*100:.1f} -> **{tutar:,.0f} TL**")
 else:
-    st.info("👈 Analize başlamak için sol menüden kategori ve hisse seçip 'Analizi Başlat' butonuna basın.")
+    st.info("👈 Sol menüden modül seçerek başlayın.")
