@@ -57,7 +57,6 @@ def listeleri_hazirla():
     except: return bist30, yedek_bist100
 
 BIST_30_LISTESI, TUM_HISSELER = listeleri_hazirla()
-# Gizli Cevherler (BIST 30 Olmayanlar)
 GIZLI_CEVHERLER = [h for h in TUM_HISSELER if h not in BIST_30_LISTESI]
 
 # --- 3. FONKSİYONLAR ---
@@ -82,16 +81,13 @@ def haberleri_getir(kod):
         return feedparser.parse(rss).entries[:5]
     except: return []
 
-# --- TOPLU TARAMA FONKSİYONLARI ---
 @st.cache_data(ttl=120)
 def canli_piyasa_tablosu(hisse_listesi):
-    # Performans için ilk 100
     liste = hisse_listesi[:100]
     semboller = " ".join([h + ".IS" for h in liste])
     try:
         data = yf.download(semboller, period="5d", interval="1d", group_by='ticker', auto_adjust=True, progress=False)
     except: return pd.DataFrame()
-    
     rapor = []
     for h in liste:
         try:
@@ -100,26 +96,22 @@ def canli_piyasa_tablosu(hisse_listesi):
             son = df['Close'].iloc[-1]
             deg = ((son - df['Close'].iloc[-2])/df['Close'].iloc[-2])*100
             hacim = df['Volume'].iloc[-1]
-            
             durum = "NÖTR ⚪"
             if deg > 3: durum = "GÜÇLÜ ALICI 🟢🟢"
             elif deg > 0: durum = "POZİTİF 🟢"
             elif deg < -3: durum = "GÜÇLÜ SATICI 🔴🔴"
             elif deg < 0: durum = "NEGATİF 🔴"
-            
             rapor.append({"Kod": h, "Fiyat": son, "Değişim %": deg, "Hacim": hacim, "Durum": durum})
         except: continue
     return pd.DataFrame(rapor)
 
 @st.cache_data(ttl=3600)
 def detayli_kesif_taramasi(hisse_listesi):
-    # Demo için ilk 150
     liste = hisse_listesi[:150]
     semboller = " ".join([h + ".IS" for h in liste])
     try:
         data = yf.download(semboller, period="6mo", interval="1d", group_by='ticker', auto_adjust=True, progress=False)
     except: return pd.DataFrame()
-    
     rapor = []
     for h in liste:
         try:
@@ -129,7 +121,6 @@ def detayli_kesif_taramasi(hisse_listesi):
             g30 = ((son - df['Close'].iloc[-22])/df['Close'].iloc[-22])
             g60 = ((son - df['Close'].iloc[-44])/df['Close'].iloc[-44])
             rsi = ta.rsi(df['Close'], 14).iloc[-1]
-            
             rapor.append({
                 "Hisse": h, "Fiyat": son, "30G Getiri": g30, "60G Getiri": g60, "RSI": rsi,
                 "Sinyal": "AL 🟢" if rsi < 30 else ("SAT 🔴" if rsi > 70 else "NÖTR ⚪")
@@ -197,7 +188,6 @@ with st.sidebar:
     st.divider()
 
     st.header("📲 Menü")
-    # MENÜYÜ GENİŞLETTİK
     sayfa = st.radio("Modül Seçiniz:", 
         ["🔎 Detaylı Hisse Analizi", 
          "🕵️‍♂️ Keşif Taraması (Gizli Fırsatlar)", 
@@ -211,7 +201,7 @@ with st.sidebar:
     with st.expander("💰 Hızlı Hesap Makinesi", expanded=False):
         h_calc = st.selectbox("Hisse", ["THYAO"] + BIST_30_LISTESI)
         t_calc = st.number_input("Tutar", 1000, 1000000, 10000)
-        if st.button("Hesapla"):
+        if st.button("Lot Hesapla"):
             d = veri_cek(h_calc)
             if not d.empty:
                 p = d['Close'].iloc[-1]
@@ -219,7 +209,7 @@ with st.sidebar:
                 st.write(f"Lot: {int(t_calc/p)}")
 
 # ==============================================================================
-# SAYFA 1: DETAYLI HİSSE ANALİZİ (V16'dan Alındı)
+# SAYFA 1: DETAYLI HİSSE ANALİZİ (GÜNCELLENMİŞ SİMÜLATÖR İLE)
 # ==============================================================================
 if sayfa == "🔎 Detaylı Hisse Analizi":
     st.title("🔎 Profesyonel Hisse Analizi")
@@ -230,9 +220,9 @@ if sayfa == "🔎 Detaylı Hisse Analizi":
         st.write("")
         st.write("")
         btn = st.button("ANALİZ ET 🚀", type="primary", use_container_width=True)
-    
+
     if btn or kod_giris:
-        with st.spinner("AI Analiz Yapıyor..."):
+        with st.spinner("Yapay Zeka verileri işliyor..."):
             df = veri_cek(kod_giris)
             if not df.empty:
                 isim = sirket_ismini_bul(kod_giris)
@@ -285,29 +275,58 @@ if sayfa == "🔎 Detaylı Hisse Analizi":
                 with tab4: # Tablo
                     st.dataframe(df.tail(30).sort_values(by="Date", ascending=False), use_container_width=True)
 
-                # SİTE İÇİ DETAYLI HESAP MAKİNESİ
+                # --- YENİLENEN SİTE İÇİ HESAP MAKİNESİ ---
                 st.divider()
-                st.subheader(f"🧮 {kod_giris} İçin Özel Simülatör")
-                col_calc1, col_calc2, col_calc3 = st.columns(3)
-                yatirim = col_calc1.number_input("Yatırım Miktarı (TL)", 1000, 1000000, 10000)
-                hedef = col_calc2.number_input("Hedef Fiyatın?", 0.0, 10000.0, 0.0)
+                st.subheader(f"🧮 {kod_giris} İçin AI Getiri Simülatörü")
                 
-                lot = int(yatirim/son)
-                col_calc3.metric("Alınacak Lot", lot)
+                # Kullanıcı Girişleri
+                c_sim1, c_sim2, c_sim3 = st.columns(3)
+                with c_sim1:
+                    yatirim_tutar = st.number_input("Yatırılacak Tutar (TL)", min_value=1000, value=10000, step=1000)
+                with c_sim2:
+                    vade_secimi = st.selectbox("Yatırım Vadesi Seç", ["1 Ay", "3 Ay", "6 Ay", "1 Yıl"])
+                    gun_cevir = {"1 Ay": 30, "3 Ay": 90, "6 Ay": 180, "1 Yıl": 365}
                 
-                if hedef > 0:
-                    kar = (lot*hedef) - yatirim
-                    st.success(f"Fiyat {hedef} TL olursa karın: **{kar:,.2f} TL**")
+                # Hesaplama Butonu
+                with c_sim3:
+                    st.write("") # Hizalama boşluğu
+                    st.write("")
+                    hesapla_btn = st.button("Geleceği Hesapla 🔮", type="primary", use_container_width=True)
+
+                if hesapla_btn:
+                    with st.spinner("Yapay Zeka Geleceği Hesaplıyor..."):
+                        # Prophet ile vade sonu tahmini
+                        tahmin_df = prophet_tahmin(df, gun_cevir[vade_secimi])
+                        
+                        if not tahmin_df.empty:
+                            # Hesaplamalar
+                            gelecek_fiyat = tahmin_df['yhat'].iloc[-1]
+                            lot_sayisi = int(yatirim_tutar / son)
+                            gelecek_tutar = lot_sayisi * gelecek_fiyat
+                            kar_zarar = gelecek_tutar - yatirim_tutar
+                            yuzde_kar = (kar_zarar / yatirim_tutar) * 100
+                            
+                            # Sonuç Kartları
+                            st.write("---")
+                            st.info(f"📆 **Vade:** {vade_secimi} Sonra")
+                            
+                            res1, res2, res3 = st.columns(3)
+                            res1.metric("Tahmini Fiyat", f"{gelecek_fiyat:.2f} TL", f"%{yuzde_kar:.2f}")
+                            res2.metric("Gelecek Bakiye", f"{gelecek_tutar:,.0f} TL")
+                            
+                            renk_sonuc = "normal" if kar_zarar > 0 else "inverse"
+                            res3.metric("Net Kar/Zarar", f"{kar_zarar:,.0f} TL", delta_color=renk_sonuc)
+                        else:
+                            st.error("Tahmin verisi oluşturulamadı.")
 
             else: st.error("Hisse bulunamadı.")
 
 # ==============================================================================
-# SAYFA 2: KEŞİF TARAMASI (V12'den Alındı)
+# SAYFA 2: KEŞİF TARAMASI
 # ==============================================================================
 elif sayfa == "🕵️‍♂️ Keşif Taraması (Gizli Fırsatlar)":
     st.title("🕵️‍♂️ BIST 100 Dışı Fırsatlar")
     st.info("BIST 30 harici, büyüme potansiyeli olan hisseler taranıyor.")
-    
     if st.button("Taramayı Başlat 🚀", type="primary"):
         with st.spinner("Piyasa taranıyor..."):
             df_kesif = detayli_kesif_taramasi(GIZLI_CEVHERLER)
@@ -326,7 +345,7 @@ elif sayfa == "🕵️‍♂️ Keşif Taraması (Gizli Fırsatlar)":
             else: st.error("Veri alınamadı.")
 
 # ==============================================================================
-# SAYFA 3 & 4: CANLI PİYASA (V14'ten Alındı)
+# SAYFA 3 & 4: CANLI PİYASA
 # ==============================================================================
 elif sayfa == "🏆 BIST 30 Canlı":
     st.title("🏆 BIST 30 Canlı Takip")
@@ -349,7 +368,7 @@ elif sayfa == "💯 BIST 100 Canlı":
                          hide_index=True, use_container_width=True, height=800)
 
 # ==============================================================================
-# SAYFA 5: PORTFÖY (V14'ten Alındı)
+# SAYFA 5: PORTFÖY
 # ==============================================================================
 elif sayfa == "⚖️ Akıllı Portföy":
     st.title("⚖️ Markowitz Portföy Optimizasyonu")
