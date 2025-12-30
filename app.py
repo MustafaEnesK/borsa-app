@@ -13,12 +13,15 @@ from xgboost import XGBClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 from datetime import datetime, timedelta
+import warnings
+warnings.filterwarnings('ignore')
 
 # --- SAYFA AYARLARI ---
 st.set_page_config(page_title="BorsApp - AI Terminal", page_icon="📈", layout="wide")
 
 # --- 1. GÜVENLİK KAPISI (YASAL UYARI) ---
-if 'yasal_kabul' not in st.session_state: st.session_state.yasal_kabul = False
+if 'yasal_kabul' not in st.session_state:
+    st.session_state.yasal_kabul = False
 
 if not st.session_state.yasal_kabul:
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -39,8 +42,10 @@ if not st.session_state.yasal_kabul:
     st.stop()
 
 # --- 2. AYARLAR VE LİSTELER ---
-if 'analiz_aktif' not in st.session_state: st.session_state.analiz_aktif = False
-if 'secilen_hisse' not in st.session_state: st.session_state.secilen_hisse = ""
+if 'analiz_aktif' not in st.session_state:
+    st.session_state.analiz_aktif = False
+if 'secilen_hisse' not in st.session_state:
+    st.session_state.secilen_hisse = ""
 
 @st.cache_data(ttl=43200)
 def listeleri_hazirla():
@@ -51,35 +56,46 @@ def listeleri_hazirla():
         tablolar = pd.read_html(url)
         tum = []
         for t in tablolar:
-            if 'Kod' in t.columns: tum.extend([str(k).strip().upper() for k in t['Kod'].tolist()])
+            if 'Kod' in t.columns:
+                tum.extend([str(k).strip().upper() for k in t['Kod'].tolist() if pd.notna(k)])
         final = sorted(list(set(tum)))
-        return bist30, (final if len(final)>50 else yedek_bist100)
-    except: return bist30, yedek_bist100
+        return bist30, (final if len(final) > 50 else yedek_bist100)
+    except:
+        return bist30, yedek_bist100
 
 BIST_30_LISTESI, TUM_HISSELER = listeleri_hazirla()
 GIZLI_CEVHERLER = [h for h in TUM_HISSELER if h not in BIST_30_LISTESI]
 
 # --- 3. FONKSİYONLAR ---
-@st.cache_data(ttl=600) 
+@st.cache_data(ttl=600)
 def veri_cek(kod):
-    if not kod.endswith(".IS"): kod += ".IS"
-    df = yf.download(kod, period="2y", interval="1d", progress=False, auto_adjust=True)
-    if df.empty: return pd.DataFrame()
-    if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-    df.reset_index(inplace=True)
-    return df
+    try:
+        if not kod.endswith(".IS"):
+            kod += ".IS"
+        df = yf.download(kod, period="2y", interval="1d", progress=False, auto_adjust=True)
+        if df.empty:
+            return pd.DataFrame()
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df.reset_index(inplace=True)
+        return df
+    except Exception as e:
+        return pd.DataFrame()
 
 def sirket_ismini_bul(kod):
     try:
-        if not kod.endswith(".IS"): kod += ".IS"
+        if not kod.endswith(".IS"):
+            kod += ".IS"
         return yf.Ticker(kod).info.get('longName', kod)
-    except: return kod
+    except:
+        return kod
 
 def haberleri_getir(kod):
     try:
         rss = f"https://news.google.com/rss/search?q={kod}+hisse&hl=tr&gl=TR&ceid=TR:tr"
         return feedparser.parse(rss).entries[:5]
-    except: return []
+    except:
+        return []
 
 @st.cache_data(ttl=120)
 def canli_piyasa_tablosu(hisse_listesi):
@@ -87,22 +103,45 @@ def canli_piyasa_tablosu(hisse_listesi):
     semboller = " ".join([h + ".IS" for h in liste])
     try:
         data = yf.download(semboller, period="5d", interval="1d", group_by='ticker', auto_adjust=True, progress=False)
-    except: return pd.DataFrame()
+    except:
+        return pd.DataFrame()
+    
     rapor = []
     for h in liste:
         try:
-            df = data[h + ".IS"]
-            if df.empty: continue
+            if len(liste) == 1:
+                df = data
+            else:
+                df = data[h + ".IS"]
+            
+            if df.empty or len(df) < 2:
+                continue
+            
             son = df['Close'].iloc[-1]
-            deg = ((son - df['Close'].iloc[-2])/df['Close'].iloc[-2])*100
+            onceki = df['Close'].iloc[-2]
+            deg = ((son - onceki) / onceki) * 100
             hacim = df['Volume'].iloc[-1]
+            
             durum = "NÖTR ⚪"
-            if deg > 3: durum = "GÜÇLÜ ALICI 🟢🟢"
-            elif deg > 0: durum = "POZİTİF 🟢"
-            elif deg < -3: durum = "GÜÇLÜ SATICI 🔴🔴"
-            elif deg < 0: durum = "NEGATİF 🔴"
-            rapor.append({"Kod": h, "Fiyat": son, "Değişim %": deg, "Hacim": hacim, "Durum": durum})
-        except: continue
+            if deg > 3:
+                durum = "GÜÇLÜ ALICI 🟢🟢"
+            elif deg > 0:
+                durum = "POZİTİF 🟢"
+            elif deg < -3:
+                durum = "GÜÇLÜ SATICI 🔴🔴"
+            elif deg < 0:
+                durum = "NEGATİF 🔴"
+            
+            rapor.append({
+                "Kod": h,
+                "Fiyat": round(son, 2),
+                "Değişim %": round(deg, 2),
+                "Hacim": int(hacim),
+                "Durum": durum
+            })
+        except:
+            continue
+    
     return pd.DataFrame(rapor)
 
 @st.cache_data(ttl=3600)
@@ -111,21 +150,57 @@ def detayli_kesif_taramasi(hisse_listesi):
     semboller = " ".join([h + ".IS" for h in liste])
     try:
         data = yf.download(semboller, period="6mo", interval="1d", group_by='ticker', auto_adjust=True, progress=False)
-    except: return pd.DataFrame()
+    except:
+        return pd.DataFrame()
+    
     rapor = []
     for h in liste:
         try:
-            df = data[h + ".IS"]
-            if df.empty or len(df)<70: continue
+            if len(liste) == 1:
+                df = data
+            else:
+                df = data[h + ".IS"]
+            
+            if df.empty or len(df) < 70:
+                continue
+            
             son = df['Close'].iloc[-1]
-            g30 = ((son - df['Close'].iloc[-22])/df['Close'].iloc[-22])
-            g60 = ((son - df['Close'].iloc[-44])/df['Close'].iloc[-44])
-            rsi = ta.rsi(df['Close'], 14).iloc[-1]
+            
+            # 30 günlük getiri
+            if len(df) >= 22:
+                g30 = ((son - df['Close'].iloc[-22]) / df['Close'].iloc[-22]) * 100
+            else:
+                g30 = 0
+            
+            # 60 günlük getiri
+            if len(df) >= 44:
+                g60 = ((son - df['Close'].iloc[-44]) / df['Close'].iloc[-44]) * 100
+            else:
+                g60 = 0
+            
+            rsi_val = ta.rsi(df['Close'], 14)
+            if rsi_val is not None and not rsi_val.empty:
+                rsi = rsi_val.iloc[-1]
+            else:
+                rsi = 50
+            
+            sinyal = "NÖTR ⚪"
+            if rsi < 30:
+                sinyal = "AL 🟢"
+            elif rsi > 70:
+                sinyal = "SAT 🔴"
+            
             rapor.append({
-                "Hisse": h, "Fiyat": son, "30G Getiri": g30, "60G Getiri": g60, "RSI": rsi,
-                "Sinyal": "AL 🟢" if rsi < 30 else ("SAT 🔴" if rsi > 70 else "NÖTR ⚪")
+                "Hisse": h,
+                "Fiyat": round(son, 2),
+                "30G Getiri": round(g30, 2),
+                "60G Getiri": round(g60, 2),
+                "RSI": round(rsi, 2),
+                "Sinyal": sinyal
             })
-        except: continue
+        except:
+            continue
+    
     return pd.DataFrame(rapor)
 
 # --- AI MODELLERİ ---
@@ -136,40 +211,68 @@ def xgboost_analiz(df):
         data['SMA'] = ta.sma(data['Close'], 50)
         data['Target'] = (data['Close'].shift(-1) > data['Close']).astype(int)
         data.dropna(inplace=True)
+        
+        if len(data) < 100:
+            return None, None
+        
         X = data[['RSI', 'SMA', 'Volume']]
         y = data['Target']
+        
         X_train, X_test, y_train, y_test = train_test_split(X[:-1], y[:-1], test_size=0.2, shuffle=False)
-        model = XGBClassifier(eval_metric='logloss')
+        model = XGBClassifier(eval_metric='logloss', random_state=42, n_estimators=100)
         model.fit(X_train, y_train)
+        
         last = X.iloc[[-1]]
-        return model.predict(last)[0], model.predict_proba(last)[0]
-    except: return None, None
+        pred = model.predict(last)[0]
+        prob = model.predict_proba(last)[0]
+        
+        return pred, prob
+    except Exception as e:
+        return None, None
 
 def prophet_tahmin(df, gun=30):
     try:
-        df_p = df[['Date', 'Close']].rename(columns={'Date':'ds', 'Close':'y'})
-        m = Prophet()
+        df_p = df[['Date', 'Close']].rename(columns={'Date': 'ds', 'Close': 'y'})
+        m = Prophet(daily_seasonality=False, yearly_seasonality=False)
         m.fit(df_p)
         fut = m.make_future_dataframe(periods=gun)
-        return m.predict(fut)
-    except: return pd.DataFrame()
+        forecast = m.predict(fut)
+        return forecast
+    except Exception as e:
+        return pd.DataFrame()
 
 def markowitz(hisseler, butce):
-    if len(hisseler)<2: return None, "Min 2 hisse."
+    if len(hisseler) < 2:
+        return None, "Minimum 2 hisse gerekli."
+    
     data = pd.DataFrame()
     for h in hisseler:
         d = veri_cek(h)
-        if not d.empty: data[h] = d.set_index('Date')['Close']
+        if not d.empty:
+            data[h] = d.set_index('Date')['Close']
+    
     data.dropna(inplace=True)
-    if len(data)<50: return None, "Veri yetersiz."
+    
+    if len(data) < 50:
+        return None, "Veri yetersiz."
+    
     ret = data.pct_change().dropna()
-    mu, sigma = ret.mean().values, ret.cov().values
-    w = cp.Variable(len(data.columns))
-    prob = cp.Problem(cp.Minimize(cp.quad_form(w, sigma)), [cp.sum(w)==1, w>=0])
+    mu = ret.mean().values
+    sigma = ret.cov().values
+    
+    n = len(data.columns)
+    w = cp.Variable(n)
+    
+    risk = cp.quad_form(w, sigma)
+    prob = cp.Problem(cp.Minimize(risk), [cp.sum(w) == 1, w >= 0])
+    
     try:
         prob.solve()
-        return dict(zip(data.columns, np.round(w.value,3))), None
-    except: return None, "Hata."
+        if w.value is None:
+            return None, "Optimizasyon başarısız."
+        return dict(zip(data.columns, np.round(w.value, 3))), None
+    except:
+        return None, "Optimizasyon hatası."
 
 # --- ARAYÜZ (SIDEBAR) ---
 with st.sidebar:
@@ -183,8 +286,10 @@ with st.sidebar:
     """, unsafe_allow_html=True)
     st.write("")
     col_s1, col_s2 = st.columns(2)
-    with col_s1: st.link_button("👔 LinkedIn", "https://www.linkedin.com/in/mustafa-enes-korkmazoglu", use_container_width=True)
-    with col_s2: st.link_button("📸 Instagram", "https://www.instagram.com/mustafaenesk_", use_container_width=True)
+    with col_s1:
+        st.link_button("👔 LinkedIn", "https://www.linkedin.com/in/mustafa-enes-korkmazoglu", use_container_width=True)
+    with col_s2:
+        st.link_button("📸 Instagram", "https://www.instagram.com/mustafaenesk_", use_container_width=True)
     st.divider()
 
     st.header("📲 Menü")
@@ -209,14 +314,15 @@ with st.sidebar:
                 st.write(f"Lot: {int(t_calc/p)}")
 
 # ==============================================================================
-# SAYFA 1: DETAYLI HİSSE ANALİZİ (GÜNCELLENMİŞ SİMÜLATÖR İLE)
+# SAYFA 1: DETAYLI HİSSE ANALİZİ
 # ==============================================================================
 if sayfa == "🔎 Detaylı Hisse Analizi":
     st.title("🔎 Profesyonel Hisse Analizi")
     
-    c1, c2 = st.columns([3,1])
-    with c1: kod_giris = st.text_input("Hisse Kodu (Örn: EBEBK, KONTR)", "THYAO").upper()
-    with c2: 
+    c1, c2 = st.columns([3, 1])
+    with c1:
+        kod_giris = st.text_input("Hisse Kodu (Örn: EBEBK, KONTR)", "THYAO").upper()
+    with c2:
         st.write("")
         st.write("")
         btn = st.button("ANALİZ ET 🚀", type="primary", use_container_width=True)
@@ -224,10 +330,11 @@ if sayfa == "🔎 Detaylı Hisse Analizi":
     if btn or kod_giris:
         with st.spinner("Yapay Zeka verileri işliyor..."):
             df = veri_cek(kod_giris)
-            if not df.empty:
+            if not df.empty and len(df) >= 2:
                 isim = sirket_ismini_bul(kod_giris)
                 son = df['Close'].iloc[-1]
-                deg = ((son - df['Close'].iloc[-2])/df['Close'].iloc[-2])*100
+                onceki = df['Close'].iloc[-2]
+                deg = ((son - onceki) / onceki) * 100
                 renk = "green" if deg > 0 else "red"
                 
                 st.markdown(f"### {isim}")
@@ -235,51 +342,85 @@ if sayfa == "🔎 Detaylı Hisse Analizi":
                 
                 tab1, tab2, tab3, tab4 = st.tabs(["📊 Genel Bakış", "🧠 Yapay Zeka", "📰 Haberler", "📅 Veri Tablosu"])
                 
-                with tab1: # Grafik & Temel
-                    st.plotly_chart(go.Figure(data=[go.Candlestick(x=df['Date'], open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])]).update_layout(height=500, template="plotly_dark", xaxis_rangeslider_visible=False), use_container_width=True)
+                with tab1:
+                    fig = go.Figure(data=[go.Candlestick(
+                        x=df['Date'],
+                        open=df['Open'],
+                        high=df['High'],
+                        low=df['Low'],
+                        close=df['Close']
+                    )])
+                    fig.update_layout(height=500, template="plotly_dark", xaxis_rangeslider_visible=False)
+                    st.plotly_chart(fig, use_container_width=True)
+                    
                     try:
-                        info = yf.Ticker(kod_giris+".IS").info
+                        info = yf.Ticker(kod_giris + ".IS").info
                         c_1, c_2, c_3, c_4 = st.columns(4)
-                        c_1.metric("F/K", f"{info.get('trailingPE','-'):.2f}" if info.get('trailingPE') else '-')
-                        c_2.metric("PD/DD", f"{info.get('priceToBook','-'):.2f}" if info.get('priceToBook') else '-')
-                        c_3.metric("Hacim", f"{df['Volume'].iloc[-1]:,}")
-                        c_4.metric("Zirve", f"{info.get('fiftyTwoWeekHigh','-')} ₺")
-                    except: pass
+                        
+                        pe = info.get('trailingPE', None)
+                        c_1.metric("F/K", f"{pe:.2f}" if pe else '-')
+                        
+                        pb = info.get('priceToBook', None)
+                        c_2.metric("PD/DD", f"{pb:.2f}" if pb else '-')
+                        
+                        c_3.metric("Hacim", f"{int(df['Volume'].iloc[-1]):,}")
+                        
+                        high52 = info.get('fiftyTwoWeekHigh', None)
+                        c_4.metric("Zirve", f"{high52:.2f} ₺" if high52 else '-')
+                    except:
+                        pass
 
-                with tab2: # AI
-                    c_ai1, c_ai2 = st.columns([1,2])
+                with tab2:
+                    c_ai1, c_ai2 = st.columns([1, 2])
                     pred, prob = xgboost_analiz(df)
+                    
                     with c_ai1:
                         st.subheader("AI Sinyali")
                         if pred is not None:
-                            guven = max(prob)*100
-                            if pred==1: st.success(f"YÜKSELİŞ (Güven: %{guven:.1f})")
-                            else: st.error(f"DÜŞÜŞ (Güven: %{guven:.1f})")
-                        else: st.warning("Veri yetersiz.")
+                            guven = max(prob) * 100
+                            if pred == 1:
+                                st.success(f"YÜKSELİŞ (Güven: %{guven:.1f})")
+                            else:
+                                st.error(f"DÜŞÜŞ (Güven: %{guven:.1f})")
+                        else:
+                            st.warning("Veri yetersiz.")
+                    
                     with c_ai2:
                         st.subheader("Gelecek Tahmini")
                         fc = prophet_tahmin(df)
                         if not fc.empty:
                             fig_p = go.Figure()
-                            fig_p.add_trace(go.Scatter(x=df['Date'], y=df['Close'], name='Gerçek', line=dict(color='white')))
-                            fut = fc[fc['ds']>df['Date'].iloc[-1]]
-                            fig_p.add_trace(go.Scatter(x=fut['ds'], y=fut['yhat'], name='Tahmin', line=dict(color='cyan', dash='dash')))
-                            st.plotly_chart(fig_p.update_layout(height=350, template="plotly_dark"), use_container_width=True)
+                            fig_p.add_trace(go.Scatter(
+                                x=df['Date'],
+                                y=df['Close'],
+                                name='Gerçek',
+                                line=dict(color='white')
+                            ))
+                            fut = fc[fc['ds'] > df['Date'].iloc[-1]]
+                            fig_p.add_trace(go.Scatter(
+                                x=fut['ds'],
+                                y=fut['yhat'],
+                                name='Tahmin',
+                                line=dict(color='cyan', dash='dash')
+                            ))
+                            fig_p.update_layout(height=350, template="plotly_dark")
+                            st.plotly_chart(fig_p, use_container_width=True)
 
-                with tab3: # Haberler
+                with tab3:
                     news = haberleri_getir(kod_giris)
                     if news:
-                        for n in news: st.info(f"[{n.title}]({n.link})")
-                    else: st.write("Haber yok.")
+                        for n in news:
+                            st.info(f"[{n.title}]({n.link})")
+                    else:
+                        st.write("Haber yok.")
 
-                with tab4: # Tablo
+                with tab4:
                     st.dataframe(df.tail(30).sort_values(by="Date", ascending=False), use_container_width=True)
 
-                # --- YENİLENEN SİTE İÇİ HESAP MAKİNESİ ---
+                # --- SİMÜLATÖR ---
                 st.divider()
                 st.subheader(f"🧮 {kod_giris} İçin AI Getiri Simülatörü")
                 
-                # Kullanıcı Girişleri
                 c_sim1, c_sim2, c_sim3 = st.columns(3)
                 with c_sim1:
                     yatirim_tutar = st.number_input("Yatırılacak Tutar (TL)", min_value=1000, value=10000, step=1000)
@@ -287,26 +428,22 @@ if sayfa == "🔎 Detaylı Hisse Analizi":
                     vade_secimi = st.selectbox("Yatırım Vadesi Seç", ["1 Ay", "3 Ay", "6 Ay", "1 Yıl"])
                     gun_cevir = {"1 Ay": 30, "3 Ay": 90, "6 Ay": 180, "1 Yıl": 365}
                 
-                # Hesaplama Butonu
                 with c_sim3:
-                    st.write("") # Hizalama boşluğu
+                    st.write("")
                     st.write("")
                     hesapla_btn = st.button("Geleceği Hesapla 🔮", type="primary", use_container_width=True)
 
                 if hesapla_btn:
                     with st.spinner("Yapay Zeka Geleceği Hesaplıyor..."):
-                        # Prophet ile vade sonu tahmini
                         tahmin_df = prophet_tahmin(df, gun_cevir[vade_secimi])
                         
                         if not tahmin_df.empty:
-                            # Hesaplamalar
                             gelecek_fiyat = tahmin_df['yhat'].iloc[-1]
                             lot_sayisi = int(yatirim_tutar / son)
                             gelecek_tutar = lot_sayisi * gelecek_fiyat
                             kar_zarar = gelecek_tutar - yatirim_tutar
                             yuzde_kar = (kar_zarar / yatirim_tutar) * 100
                             
-                            # Sonuç Kartları
                             st.write("---")
                             st.info(f"📆 **Vade:** {vade_secimi} Sonra")
                             
@@ -318,8 +455,8 @@ if sayfa == "🔎 Detaylı Hisse Analizi":
                             res3.metric("Net Kar/Zarar", f"{kar_zarar:,.0f} TL", delta_color=renk_sonuc)
                         else:
                             st.error("Tahmin verisi oluşturulamadı.")
-
-            else: st.error("Hisse bulunamadı.")
+            else:
+                st.error("Hisse bulunamadı veya yeterli veri yok.")
 
 # ==============================================================================
 # SAYFA 2: KEŞİF TARAMASI
@@ -337,35 +474,55 @@ elif sayfa == "🕵️‍♂️ Keşif Taraması (Gizli Fırsatlar)":
                     column_config={
                         "Hisse": st.column_config.TextColumn("Kod"),
                         "Fiyat": st.column_config.NumberColumn("Fiyat", format="%.2f ₺"),
-                        "30G Getiri": st.column_config.ProgressColumn("1 Ay %", format="%.2f%%", min_value=-0.5, max_value=0.5),
+                        "30G Getiri": st.column_config.ProgressColumn("1 Ay %", format="%.2f%%", min_value=-50, max_value=50),
                         "60G Getiri": st.column_config.NumberColumn("2 Ay %", format="%.2f%%"),
                         "RSI": st.column_config.NumberColumn("RSI"),
-                    }, hide_index=True, use_container_width=True, height=800
+                    },
+                    hide_index=True,
+                    use_container_width=True,
+                    height=800
                 )
-            else: st.error("Veri alınamadı.")
+            else:
+                st.error("Veri alınamadı.")
 
 # ==============================================================================
 # SAYFA 3 & 4: CANLI PİYASA
 # ==============================================================================
 elif sayfa == "🏆 BIST 30 Canlı":
     st.title("🏆 BIST 30 Canlı Takip")
-    if st.button("Yenile"): st.cache_data.clear()
+    if st.button("Yenile"):
+        st.cache_data.clear()
     with st.spinner("Yükleniyor..."):
         df_30 = canli_piyasa_tablosu(BIST_30_LISTESI)
         if not df_30.empty:
-            st.dataframe(df_30.sort_values(by="Değişim %", ascending=False), 
-                         column_config={"Fiyat": st.column_config.NumberColumn(format="%.2f ₺"), "Değişim %": st.column_config.NumberColumn(format="%.2f%%")},
-                         hide_index=True, use_container_width=True, height=800)
+            st.dataframe(
+                df_30.sort_values(by="Değişim %", ascending=False),
+                column_config={
+                    "Fiyat": st.column_config.NumberColumn(format="%.2f ₺"),
+                    "Değişim %": st.column_config.NumberColumn(format="%.2f%%")
+                },
+                hide_index=True,
+                use_container_width=True,
+                height=800
+            )
 
 elif sayfa == "💯 BIST 100 Canlı":
     st.title("💯 BIST 100 Canlı Takip")
-    if st.button("Yenile"): st.cache_data.clear()
+    if st.button("Yenile"):
+        st.cache_data.clear()
     with st.spinner("Yükleniyor..."):
         df_100 = canli_piyasa_tablosu(TUM_HISSELER)
         if not df_100.empty:
-            st.dataframe(df_100.sort_values(by="Değişim %", ascending=False), 
-                         column_config={"Fiyat": st.column_config.NumberColumn(format="%.2f ₺"), "Değişim %": st.column_config.NumberColumn(format="%.2f%%")},
-                         hide_index=True, use_container_width=True, height=800)
+            st.dataframe(
+                df_100.sort_values(by="Değişim %", ascending=False),
+                column_config={
+                    "Fiyat": st.column_config.NumberColumn(format="%.2f ₺"),
+                    "Değişim %": st.column_config.NumberColumn(format="%.2f%%")
+                },
+                hide_index=True,
+                use_container_width=True,
+                height=800
+            )
 
 # ==============================================================================
 # SAYFA 5: PORTFÖY
@@ -375,13 +532,18 @@ elif sayfa == "⚖️ Akıllı Portföy":
     hisseler = st.multiselect("Portföy Oluştur", TUM_HISSELER, default=["THYAO", "ASELS", "GARAN"])
     butce = st.number_input("Bütçe (TL)", 1000, 1000000, 50000)
     if st.button("Optimize Et"):
-        agirlik, err = markowitz(hisseler, butce)
-        if err: st.error(err)
+        if len(hisseler) < 2:
+            st.warning("Lütfen en az 2 hisse seçin.")
         else:
-            df_p = pd.DataFrame(list(agirlik.items()), columns=['Hisse','Oran'])
-            df_p = df_p[df_p['Oran']>0.01]
-            c1,c2 = st.columns(2)
-            c1.plotly_chart(px.pie(df_p, values='Oran', names='Hisse'), use_container_width=True)
-            c2.write("### Alınacaklar")
-            for i, r in df_p.iterrows():
-                st.write(f"• **{r['Hisse']}**: {butce*r['Oran']:,.0f} TL")
+            with st.spinner("Portföy optimize ediliyor..."):
+                agirlik, err = markowitz(hisseler, butce)
+                if err:
+                    st.error(err)
+                else:
+                    df_p = pd.DataFrame(list(agirlik.items()), columns=['Hisse', 'Oran'])
+                    df_p = df_p[df_p['Oran'] > 0.01]
+                    c1, c2 = st.columns(2)
+                    c1.plotly_chart(px.pie(df_p, values='Oran', names='Hisse'), use_container_width=True)
+                    c2.write("### Alınacaklar")
+                    for i, r in df_p.iterrows():
+                        st.write(f"• **{r['Hisse']}**: {butce * r['Oran']:,.0f} TL")
