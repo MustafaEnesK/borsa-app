@@ -44,6 +44,7 @@ GIZLI_CEVHERLER_DINAMIK = [h for h in TUM_HISSELER_CANLI if h not in BIST_30_SAB
 # --- VERİ ÇEKME ---
 @st.cache_data(ttl=600) 
 def veri_cek(kod):
+    kod = kod.upper().strip()
     if not kod.endswith(".IS"): kod += ".IS"
     df = yf.download(kod, period="2y", interval="1d", progress=False, auto_adjust=True)
     if df.empty: return pd.DataFrame()
@@ -78,26 +79,16 @@ def detayli_tarama_yap(hisse_listesi):
         except: continue
     return pd.DataFrame(rapor)
 
-# --- AI & SİMÜLASYON MOTORU ---
+# --- AI & SİMÜLASYON ---
 def simulasyon_hesapla(df, gun_sayisi):
-    """
-    Prophet ile seçilen gün sayısı kadar ileri gidip fiyat tahmini yapar.
-    """
     try:
-        # Prophet Modeli Hazırlığı
         df_prophet = df[['Date', 'Close']].rename(columns={'Date': 'ds', 'Close': 'y'})
         m = Prophet(daily_seasonality=True)
         m.fit(df_prophet)
-        
-        # Gelecek Tahmini
         future = m.make_future_dataframe(periods=gun_sayisi)
         forecast = m.predict(future)
-        
-        # Tahmin edilen son fiyat (Bugün + Gün Sayısı)
-        gelecek_fiyat = forecast['yhat'].iloc[-1]
-        return gelecek_fiyat
-    except:
-        return None
+        return forecast['yhat'].iloc[-1]
+    except: return None
 
 def xgboost_sinyal(df):
     data = df.copy()
@@ -152,73 +143,99 @@ with st.sidebar:
     st.divider()
 
     st.header("📲 Kontrol Paneli")
-    sayfa = st.radio("Modül Seçiniz:", ["🕵️‍♂️ Canlı Keşif Taraması", "📈 Yapay Zeka Analizi", "⚖️ Akıllı Portföy"])
+    # YENİ MENÜ EKLENDİ: "🔎 Manuel/Serbest Analiz"
+    sayfa = st.radio("Modül Seçiniz:", ["🔎 Manuel/Serbest Analiz", "🕵️‍♂️ Canlı Keşif Taraması", "📈 Liste Bazlı AI Analizi", "⚖️ Akıllı Portföy"])
     
     st.divider()
     
-    # --- YENİLENEN YATIRIM SİMÜLATÖRÜ ---
-    with st.expander("💰 AI Getiri Simülatörü (YENİ)", expanded=True):
-        st.caption("Yapay zeka ile kar/zarar tahmini yap")
-        
-        sim_hisse = st.selectbox("Hisse Seç", ["THYAO", "ASELS", "GARAN", "EREGL"] + TUM_HISSELER_CANLI[:50])
+    with st.expander("💰 AI Getiri Simülatörü", expanded=True):
+        sim_hisse = st.selectbox("Hisse Seç", ["THYAO", "ASELS", "GARAN"] + TUM_HISSELER_CANLI[:50])
         sim_tutar = st.number_input("Yatırım Tutarı (TL)", 1000, 1000000, 10000, step=1000)
-        
-        # Vade Seçimi
-        vade_etiket = st.select_slider(
-            "Vade Seç (Ne kadar tutacaksın?)",
-            options=["15 Gün", "1 Ay", "3 Ay", "6 Ay"]
-        )
-        
-        # Vadeyi güne çevirme
+        vade_etiket = st.select_slider("Vade Seç", options=["15 Gün", "1 Ay", "3 Ay", "6 Ay"])
         gun_map = {"15 Gün": 15, "1 Ay": 30, "3 Ay": 90, "6 Ay": 180}
-        sim_gun = gun_map[vade_etiket]
-
+        
         if st.button("Getiriyi Hesapla 🧮", type="primary"):
-            with st.spinner("AI Geleceği Hesaplıyor..."):
+            with st.spinner("AI Hesaplıyor..."):
                 df_sim = veri_cek(sim_hisse)
                 if not df_sim.empty:
-                    # Anlık veri
                     anlik_fiyat = df_sim['Close'].iloc[-1]
-                    lot_sayisi = int(sim_tutar / anlik_fiyat)
-                    
-                    # AI Tahmini
-                    tahmini_fiyat = simulasyon_hesapla(df_sim, sim_gun)
-                    
+                    tahmini_fiyat = simulasyon_hesapla(df_sim, gun_map[vade_etiket])
                     if tahmini_fiyat:
-                        gelecek_tutar = lot_sayisi * tahmini_fiyat
+                        lot = int(sim_tutar / anlik_fiyat)
+                        gelecek_tutar = lot * tahmini_fiyat
                         fark = gelecek_tutar - sim_tutar
-                        
-                        st.divider()
-                        st.write(f"📦 **Alınan Lot:** {lot_sayisi}")
-                        st.write(f"📍 **Şu Anki Fiyat:** {anlik_fiyat:.2f} TL")
-                        st.write(f"🏁 **{vade_etiket} Sonraki Tahmin:** {tahmini_fiyat:.2f} TL")
-                        
-                        # Sonuç Kartı
-                        renk = "normal" if fark >= 0 else "inverse" # Yeşil/Kırmızı
-                        label = "TAHMİNİ KAR" if fark >= 0 else "TAHMİNİ ZARAR"
-                        
-                        st.metric(
-                            label=label,
-                            value=f"{gelecek_tutar:,.0f} TL",
-                            delta=f"{fark:,.0f} TL",
-                            delta_color=renk
-                        )
-                    else:
-                        st.error("Tahmin oluşturulamadı.")
-                else:
-                    st.error("Veri yok.")
+                        renk = "normal" if fark >= 0 else "inverse"
+                        st.metric("TAHMİNİ KAR/ZARAR", f"{gelecek_tutar:,.0f} TL", f"{fark:,.0f} TL", delta_color=renk)
+                        st.caption(f"{vade_etiket} sonraki AI tahmini: {tahmini_fiyat:.2f} TL")
+                    else: st.error("Hesaplanamadı.")
+
+# --- SAYFA 4: MANUEL/SERBEST ANALİZ (YENİ MODÜL) ---
+if sayfa == "🔎 Manuel/Serbest Analiz":
+    st.title("🔎 Serbest Hisse Arama Modülü")
+    st.info("Listelerde bulamadığınız veya özel olarak incelemek istediğiniz hisse kodunu aşağıya yazın.")
+    
+    col_input1, col_input2 = st.columns([3, 1])
+    with col_input1:
+        girilen_kod = st.text_input("BIST Kodu Giriniz (Örn: KONTR, EBEBK, TABGD)", "THYAO").upper()
+    with col_input2:
+        st.write("")
+        st.write("")
+        btn_ara = st.button("Hisse Getir 🔎", type="primary", use_container_width=True)
+    
+    if btn_ara or girilen_kod:
+        with st.spinner(f"{girilen_kod} verileri getiriliyor..."):
+            df = veri_cek(girilen_kod)
+            if not df.empty:
+                st.success(f"✅ {girilen_kod} Verisi Bulundu!")
+                son = df['Close'].iloc[-1]
+                deg = ((son - df['Close'].iloc[-2])/df['Close'].iloc[-2])*100
+                
+                # Temel Verileri Çekmeye Çalış
+                try:
+                    info = yf.Ticker(girilen_kod+".IS").info
+                    fk = info.get('trailingPE', '-')
+                    pd_dd = info.get('priceToBook', '-')
+                except: fk, pd_dd = "-", "-"
+
+                c1,c2,c3,c4 = st.columns(4)
+                c1.metric("Fiyat", f"{son:.2f} ₺", f"%{deg:.2f}")
+                c2.metric("RSI", f"{ta.rsi(df['Close'], 14).iloc[-1]:.1f}")
+                c3.metric("F/K", fk if fk!='-' else '-')
+                c4.metric("PD/DD", pd_dd if pd_dd!='-' else '-')
+
+                tab1, tab2 = st.tabs(["📊 Grafik & Teknik", "🧠 Yapay Zeka"])
+                with tab1:
+                    fig = go.Figure(data=[go.Candlestick(x=df['Date'], open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
+                    fig.add_trace(go.Scatter(x=df['Date'], y=ta.sma(df['Close'], 50), line=dict(color='orange'), name='SMA50'))
+                    st.plotly_chart(fig, use_container_width=True)
+                with tab2:
+                    pred, prob, acc = xgboost_sinyal(df)
+                    if pred is not None:
+                        renk = "green" if pred==1 else "red"
+                        yon = "YÜKSELİŞ" if pred==1 else "DÜŞÜŞ"
+                        st.markdown(f"### Sinyal: <span style='color:{renk}'>{yon}</span>", unsafe_allow_html=True)
+                        st.write(f"Güven: %{max(prob)*100:.1f}")
+                    
+                    m = Prophet()
+                    m.fit(df.rename(columns={'Date':'ds', 'Close':'y'}))
+                    future = m.make_future_dataframe(periods=30)
+                    fcast = m.predict(future)
+                    fig_p = go.Figure()
+                    fig_p.add_trace(go.Scatter(x=fcast['ds'], y=fcast['yhat'], line=dict(color='cyan'), name='Tahmin'))
+                    fig_p.add_trace(go.Scatter(x=df['Date'], y=df['Close'], line=dict(color='white'), name='Gerçek'))
+                    st.plotly_chart(fig_p, use_container_width=True)
+            else:
+                st.error("Hisse bulunamadı veya veri çekilemedi. Kodun doğru olduğundan emin olun.")
 
 # --- SAYFA 1: OTOMATİK KEŞİF ---
-if sayfa == "🕵️‍♂️ Canlı Keşif Taraması":
-    st.title("🕵️‍♂️ BorsApp: Canlı Piyasa Taraması")
-    st.info(f"Sistem şu an **{len(TUM_HISSELER_CANLI)}** hisseyi canlı izliyor. BIST 30 harici potansiyel hisseleri taramak için butona bas.")
-    
+elif sayfa == "🕵️‍♂️ Canlı Keşif Taraması":
+    st.title("🕵️‍♂️ Canlı Piyasa Taraması")
+    st.info(f"Sistemdeki **{len(TUM_HISSELER_CANLI)}** hisse arasından fırsatlar taranıyor.")
     if st.button("Fırsatları Tara 🚀", type="primary"):
         with st.spinner("Piyasa taranıyor..."):
             df_tablo = detayli_tarama_yap(GIZLI_CEVHERLER_DINAMIK)
             if not df_tablo.empty:
                 df_tablo = df_tablo.sort_values(by="30 Günlük", ascending=False)
-                st.success(f"✅ Tarama Tamamlandı!")
                 st.dataframe(
                     df_tablo,
                     column_config={
@@ -231,9 +248,9 @@ if sayfa == "🕵️‍♂️ Canlı Keşif Taraması":
                 )
             else: st.error("Veri alınamadı.")
 
-# --- SAYFA 2: DETAYLI ANALİZ ---
-elif sayfa == "📈 Yapay Zeka Analizi":
-    st.title("📈 BorsApp: AI Destekli Hisse Analizi")
+# --- SAYFA 2: LİSTE BAZLI ANALİZ ---
+elif sayfa == "📈 Liste Bazlı AI Analizi":
+    st.title("📈 Listeden Hızlı Analiz")
     secilen = st.selectbox("Analiz Edilecek Hisse", TUM_HISSELER_CANLI)
     if st.button("Analizi Başlat"):
         with st.spinner("AI Modelleri Çalışıyor..."):
@@ -241,34 +258,15 @@ elif sayfa == "📈 Yapay Zeka Analizi":
             if not df.empty:
                 son = df['Close'].iloc[-1]
                 deg = ((son - df['Close'].iloc[-2])/df['Close'].iloc[-2])*100
-                c1,c2,c3 = st.columns(3)
-                c1.metric("Fiyat", f"{son:.2f} ₺", f"%{deg:.2f}")
+                st.metric("Fiyat", f"{son:.2f} ₺", f"%{deg:.2f}")
                 
-                tab1, tab2 = st.tabs(["Teknik Görünüm", "Yapay Zeka Sinyali"])
-                with tab1:
-                    fig = go.Figure(data=[go.Candlestick(x=df['Date'], open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
-                    fig.add_trace(go.Scatter(x=df['Date'], y=ta.sma(df['Close'], 50), line=dict(color='orange'), name='SMA50'))
-                    st.plotly_chart(fig, use_container_width=True)
-                with tab2:
-                    pred, prob, acc = xgboost_sinyal(df)
-                    if pred is not None:
-                        renk = "green" if pred==1 else "red"
-                        yon = "YÜKSELİŞ" if pred==1 else "DÜŞÜŞ"
-                        st.markdown(f"### AI Sinyali: <span style='color:{renk}'>{yon}</span>", unsafe_allow_html=True)
-                        st.write(f"Model Güveni: %{max(prob)*100:.1f}")
-                    
-                    m = Prophet()
-                    m.fit(df.rename(columns={'Date':'ds', 'Close':'y'}))
-                    future = m.make_future_dataframe(periods=30)
-                    fcast = m.predict(future)
-                    fig_p = go.Figure()
-                    fig_p.add_trace(go.Scatter(x=fcast['ds'], y=fcast['yhat'], line=dict(color='cyan'), name='Tahmin'))
-                    fig_p.add_trace(go.Scatter(x=df['Date'], y=df['Close'], line=dict(color='white'), name='Gerçek'))
-                    st.plotly_chart(fig_p, use_container_width=True)
+                fig = go.Figure(data=[go.Candlestick(x=df['Date'], open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
+                fig.add_trace(go.Scatter(x=df['Date'], y=ta.sma(df['Close'], 50), line=dict(color='orange'), name='SMA50'))
+                st.plotly_chart(fig, use_container_width=True)
 
 # --- SAYFA 3: PORTFÖY ---
 elif sayfa == "⚖️ Akıllı Portföy":
-    st.title("⚖️ BorsApp: Portföy Sihirbazı")
+    st.title("⚖️ Portföy Sihirbazı")
     hisseler = st.multiselect("Portföy Oluştur", TUM_HISSELER_CANLI, default=["THYAO", "ASELS", "GARAN"])
     butce = st.number_input("Bütçe (TL)", 1000, 1000000, 50000)
     if st.button("Optimize Et"):
