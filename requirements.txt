@@ -3,4 +3,5 @@ yfinance
 pandas
 pandas_ta
 feedparser
-matplotlib
+plotly
+prophet
