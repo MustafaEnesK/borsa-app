@@ -21,7 +21,7 @@ st.set_page_config(page_title="BorsApp - AI Trading", page_icon="📈", layout="
 if 'analiz_aktif' not in st.session_state: st.session_state.analiz_aktif = False
 if 'secilen_hisse' not in st.session_state: st.session_state.secilen_hisse = ""
 
-# --- CANLI VERİ KAZIMA (WEB SCRAPING) ---
+# --- CANLI VERİ KAZIMA ---
 @st.cache_data(ttl=43200) 
 def tum_hisseleri_guncelle():
     yedek_liste = ["ALFAS", "ASTOR", "BIOEN", "BOBET", "BRSAN", "BURCE", "CANTE", "CEMTS", "CVKMD", "CWENE", "DAPGM", "EGEEN", "ENJSA", "EUPWR", "FROTO", "GENIL", "GESAN", "GWIND", "HKTM", "HUNER", "INVEO", "ISMEN", "IZMDC", "JANTS", "KCAER", "KLKIM", "KMPUR", "KNFRT", "KONTR", "MIATK", "MOBTL", "NATEN", "ODAS", "OTKAR", "OYLUM", "OZSUB", "PENTA", "QUAGR", "REEDR", "RUBNS", "SDTTR", "SMRTG", "SNGYO", "SOKM", "SUWEN", "TATGD", "TKFEN", "TTRAK", "VBTYZ", "YEOTK", "YYLGD", "ZOREN"]
@@ -41,7 +41,7 @@ TUM_HISSELER_CANLI = tum_hisseleri_guncelle()
 BIST_30_SABIT = ["AKBNK", "ALARK", "ARCLK", "ASELS", "ASTOR", "BIMAS", "BRSAN", "DOAS", "EKGYO", "ENKAI", "EREGL", "FROTO", "GARAN", "GUBRF", "HEKTS", "ISCTR", "KCHOL", "KONTR", "KOZAL", "KRDMD", "OYAKC", "PETKM", "PGSUS", "SAHOL", "SASA", "SISE", "TCELL", "THYAO", "TOASO", "TUPRS", "YKBNK"]
 GIZLI_CEVHERLER_DINAMIK = [h for h in TUM_HISSELER_CANLI if h not in BIST_30_SABIT]
 
-# --- VERİ ÇEKME FONKSİYONLARI ---
+# --- VERİ ÇEKME ---
 @st.cache_data(ttl=600) 
 def veri_cek(kod):
     if not kod.endswith(".IS"): kod += ".IS"
@@ -54,7 +54,6 @@ def veri_cek(kod):
 @st.cache_data(ttl=3600)
 def detayli_tarama_yap(hisse_listesi):
     semboller = [h + ".IS" for h in hisse_listesi]
-    # Performans için ilk 150 hisse (Demo)
     tarama_limiti = hisse_listesi[:150] 
     semboller_limit = [h + ".IS" for h in tarama_limiti]
     try:
@@ -67,26 +66,39 @@ def detayli_tarama_yap(hisse_listesi):
             df = data[hisse + ".IS"].copy()
             if df.empty or len(df) < 95: continue 
             son_fiyat = df['Close'].iloc[-1]
-            # Getiriler
             fiyat_30g = df['Close'].iloc[-21]
-            fiyat_60g = df['Close'].iloc[-42]
-            fiyat_90g = df['Close'].iloc[-63]
             getiri_30 = ((son_fiyat - fiyat_30g) / fiyat_30g)
-            getiri_60 = ((son_fiyat - fiyat_60g) / fiyat_60g)
-            getiri_90 = ((son_fiyat - fiyat_90g) / fiyat_90g)
-            # Teknik
             rsi = ta.rsi(df['Close'], 14).iloc[-1]
             sma50 = ta.sma(df['Close'], 50).iloc[-1]
             trend = "Yükseliş ↗️" if son_fiyat > sma50 else "Düşüş ↘️"
             rapor.append({
-                "Hisse": hisse, "Fiyat": son_fiyat,
-                "30 Günlük": getiri_30, "60 Günlük": getiri_60, "90 Günlük": getiri_90,
+                "Hisse": hisse, "Fiyat": son_fiyat, "30 Günlük": getiri_30, 
                 "RSI": rsi, "Trend": trend
             })
         except: continue
     return pd.DataFrame(rapor)
 
-# --- AI MODELLERİ ---
+# --- AI & SİMÜLASYON MOTORU ---
+def simulasyon_hesapla(df, gun_sayisi):
+    """
+    Prophet ile seçilen gün sayısı kadar ileri gidip fiyat tahmini yapar.
+    """
+    try:
+        # Prophet Modeli Hazırlığı
+        df_prophet = df[['Date', 'Close']].rename(columns={'Date': 'ds', 'Close': 'y'})
+        m = Prophet(daily_seasonality=True)
+        m.fit(df_prophet)
+        
+        # Gelecek Tahmini
+        future = m.make_future_dataframe(periods=gun_sayisi)
+        forecast = m.predict(future)
+        
+        # Tahmin edilen son fiyat (Bugün + Gün Sayısı)
+        gelecek_fiyat = forecast['yhat'].iloc[-1]
+        return gelecek_fiyat
+    except:
+        return None
+
 def xgboost_sinyal(df):
     data = df.copy()
     try:
@@ -121,9 +133,8 @@ def markowitz(hisseler, butce):
         return dict(zip(data.columns, np.round(w.value,3))), None
     except: return None, "Hata."
 
-# --- ARAYÜZ (YENİLENMİŞ TASARIM) ---
+# --- ARAYÜZ ---
 with st.sidebar:
-    # YENİ LOGO VE BAŞLIK TASARIMI
     st.markdown("""
     <div style="background-color:#0E1117; padding:20px; border-radius:15px; border:1px solid #262730; text-align:center;">
         <h1 style="color:#00CC96; margin:0; font-size: 32px; font-weight: 800;">BorsApp 🚀</h1>
@@ -145,23 +156,64 @@ with st.sidebar:
     
     st.divider()
     
-    with st.expander("💰 Hızlı Hesap Makinesi", expanded=False):
-        hisse_calc = st.selectbox("Hisse", ["THYAO", "ASELS"] + TUM_HISSELER_CANLI[:20])
-        tutar_calc = st.number_input("Tutar (TL)", 1000, 1000000, 10000, step=1000)
-        if st.button("Hesapla"):
-            df_c = veri_cek(hisse_calc)
-            if not df_c.empty:
-                fiyat = df_c['Close'].iloc[-1]
-                lot = int(tutar_calc / fiyat)
-                st.write(f"📍 Fiyat: {fiyat:.2f} TL")
-                st.write(f"📦 Lot: {lot}")
+    # --- YENİLENEN YATIRIM SİMÜLATÖRÜ ---
+    with st.expander("💰 AI Getiri Simülatörü (YENİ)", expanded=True):
+        st.caption("Yapay zeka ile kar/zarar tahmini yap")
+        
+        sim_hisse = st.selectbox("Hisse Seç", ["THYAO", "ASELS", "GARAN", "EREGL"] + TUM_HISSELER_CANLI[:50])
+        sim_tutar = st.number_input("Yatırım Tutarı (TL)", 1000, 1000000, 10000, step=1000)
+        
+        # Vade Seçimi
+        vade_etiket = st.select_slider(
+            "Vade Seç (Ne kadar tutacaksın?)",
+            options=["15 Gün", "1 Ay", "3 Ay", "6 Ay"]
+        )
+        
+        # Vadeyi güne çevirme
+        gun_map = {"15 Gün": 15, "1 Ay": 30, "3 Ay": 90, "6 Ay": 180}
+        sim_gun = gun_map[vade_etiket]
+
+        if st.button("Getiriyi Hesapla 🧮", type="primary"):
+            with st.spinner("AI Geleceği Hesaplıyor..."):
+                df_sim = veri_cek(sim_hisse)
+                if not df_sim.empty:
+                    # Anlık veri
+                    anlik_fiyat = df_sim['Close'].iloc[-1]
+                    lot_sayisi = int(sim_tutar / anlik_fiyat)
+                    
+                    # AI Tahmini
+                    tahmini_fiyat = simulasyon_hesapla(df_sim, sim_gun)
+                    
+                    if tahmini_fiyat:
+                        gelecek_tutar = lot_sayisi * tahmini_fiyat
+                        fark = gelecek_tutar - sim_tutar
+                        
+                        st.divider()
+                        st.write(f"📦 **Alınan Lot:** {lot_sayisi}")
+                        st.write(f"📍 **Şu Anki Fiyat:** {anlik_fiyat:.2f} TL")
+                        st.write(f"🏁 **{vade_etiket} Sonraki Tahmin:** {tahmini_fiyat:.2f} TL")
+                        
+                        # Sonuç Kartı
+                        renk = "normal" if fark >= 0 else "inverse" # Yeşil/Kırmızı
+                        label = "TAHMİNİ KAR" if fark >= 0 else "TAHMİNİ ZARAR"
+                        
+                        st.metric(
+                            label=label,
+                            value=f"{gelecek_tutar:,.0f} TL",
+                            delta=f"{fark:,.0f} TL",
+                            delta_color=renk
+                        )
+                    else:
+                        st.error("Tahmin oluşturulamadı.")
+                else:
+                    st.error("Veri yok.")
 
 # --- SAYFA 1: OTOMATİK KEŞİF ---
 if sayfa == "🕵️‍♂️ Canlı Keşif Taraması":
     st.title("🕵️‍♂️ BorsApp: Canlı Piyasa Taraması")
-    st.info(f"Sistem şu an **{len(TUM_HISSELER_CANLI)}** hisseyi canlı izliyor. Aşağıdaki buton ile BIST 30 harici potansiyel hisseleri tarayabilirsin.")
+    st.info(f"Sistem şu an **{len(TUM_HISSELER_CANLI)}** hisseyi canlı izliyor. BIST 30 harici potansiyel hisseleri taramak için butona bas.")
     
-    if st.button("Taramayı Başlat ve Fırsatları Bul 🚀", type="primary"):
+    if st.button("Fırsatları Tara 🚀", type="primary"):
         with st.spinner("Piyasa taranıyor..."):
             df_tablo = detayli_tarama_yap(GIZLI_CEVHERLER_DINAMIK)
             if not df_tablo.empty:
@@ -173,8 +225,6 @@ if sayfa == "🕵️‍♂️ Canlı Keşif Taraması":
                         "Hisse": st.column_config.TextColumn("Kod"),
                         "Fiyat": st.column_config.NumberColumn("Fiyat", format="%.2f ₺"),
                         "30 Günlük": st.column_config.ProgressColumn("1 Ay Getiri", format="%.2f%%", min_value=-0.5, max_value=0.5),
-                        "60 Günlük": st.column_config.NumberColumn("2 Ay %", format="%.2f%%"),
-                        "90 Günlük": st.column_config.NumberColumn("3 Ay %", format="%.2f%%"),
                         "RSI": st.column_config.NumberColumn("RSI", help="30 altı fırsat"),
                         "Trend": st.column_config.TextColumn("Yön")
                     }, hide_index=True, use_container_width=True, height=800
@@ -186,7 +236,7 @@ elif sayfa == "📈 Yapay Zeka Analizi":
     st.title("📈 BorsApp: AI Destekli Hisse Analizi")
     secilen = st.selectbox("Analiz Edilecek Hisse", TUM_HISSELER_CANLI)
     if st.button("Analizi Başlat"):
-        with st.spinner("XGBoost ve Prophet Modelleri Çalışıyor..."):
+        with st.spinner("AI Modelleri Çalışıyor..."):
             df = veri_cek(secilen)
             if not df.empty:
                 son = df['Close'].iloc[-1]
