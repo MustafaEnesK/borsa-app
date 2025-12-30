@@ -6,7 +6,7 @@ import feedparser
 import plotly.graph_objects as go
 from prophet import Prophet
 from datetime import datetime, timedelta
-import numpy as np
+import requests
 
 # --- SAYFA AYARLARI ---
 st.set_page_config(page_title="NEÜ Borsa Simülasyonu", page_icon="📈", layout="wide")
@@ -17,28 +17,53 @@ if 'analiz_aktif' not in st.session_state:
 if 'secilen_hisse' not in st.session_state:
     st.session_state.secilen_hisse = ""
 
-# --- LİSTELER ---
-BIST_30 = [
-    "AKBNK", "ALARK", "ARCLK", "ASELS", "ASTOR", "BIMAS", "BRSAN", "DOAS",
-    "EKGYO", "ENKAI", "EREGL", "FROTO", "GARAN", "GUBRF", "HEKTS", "ISCTR",
-    "KCHOL", "KONTR", "KOZAL", "KRDMD", "OYAKC", "PETKM", "PGSUS", "SAHOL",
-    "SASA", "SISE", "TCELL", "THYAO", "TOASO", "TUPRS", "YKBNK"
-]
+# --- OTOMATİK LİSTE GÜNCELLEYİCİ (YENİ!) ---
+@st.cache_data(ttl=86400) # 24 Saatte bir günceller
+def bist_listesini_guncelle():
+    """
+    İnternetten güncel BIST 100 listesini çeker.
+    Hata alırsak yedek listeyi kullanır.
+    """
+    yedek_liste = [
+        "AKBNK", "ALARK", "ARCLK", "ASELS", "ASTOR", "BIMAS", "BRSAN", "DOAS",
+        "EKGYO", "ENKAI", "EREGL", "FROTO", "GARAN", "GUBRF", "HEKTS", "ISCTR",
+        "KCHOL", "KONTR", "KOZAL", "KRDMD", "OYAKC", "PETKM", "PGSUS", "SAHOL",
+        "SASA", "SISE", "TCELL", "THYAO", "TOASO", "TUPRS", "YKBNK", "AEFES", 
+        "AGHOL", "AHGAZ", "AKFGY", "AKSA", "ALGYO", "BERA", "CANTE", "CIMSA", 
+        "EGEEN", "ENJSA", "EUPWR", "GESAN", "GWIND", "HALKB", "ISGYO", "IZMDC", 
+        "KCAER", "MAVI", "MGROS", "MIATK", "ODAS", "OTKAR", "QUAGR", "REEDR", 
+        "SKBNK", "SMRTG", "SOKM", "TAVHL", "TKFEN", "TTKOM", "ULKER", "VAKBN", 
+        "VESBE", "YEOTK", "YYLGD", "ZOREN", "ALFAS", "BIOEN", "BOBET", "CWENE",
+        "EBEBK", "EUREN", "GENIL", "KMPUR", "KONYA", "KOPOL", "KOZAA", "KZBGY",
+        "OTKAR", "OYAKC", "PENTA", "SDTTR", "SNGYO", "SUWEN", "TUKAS", "TURSG"
+    ]
+    
+    try:
+        # Wikipedia'daki BIST 100 tablosunu okumayı dener
+        url = "https://tr.wikipedia.org/wiki/BIST_100_endeksine_dahil_hisseler"
+        tablolar = pd.read_html(url)
+        
+        # Genelde ilk tablo hisse listesidir
+        df_wiki = tablolar[0]
+        
+        # 'Kod' sütununu bul ve temizle
+        if 'Kod' in df_wiki.columns:
+            guncel_liste = df_wiki['Kod'].tolist()
+            # Kodların temiz olduğundan emin ol (Boşlukları sil, .IS yoksa eklemiyoruz burada, aşağıda ekleniyor)
+            guncel_liste = [str(x).strip().upper() for x in guncel_liste]
+            return sorted(list(set(guncel_liste))) # Alfabetik sırala
+        else:
+            return sorted(yedek_liste)
+            
+    except Exception as e:
+        # İnternet yoksa veya site değiştiyse yedek listeyi döndür
+        return sorted(yedek_liste)
 
-# Potansiyelli, Büyüme Odaklı veya Gözden Kaçabilen Hisseler
-KESIF_LISTESI = [
-    "ALFAS", "BIOEN", "BOBET", "BURCE", "CVKMD", "CWENE", "DAPGM", 
-    "EGEEN", "EUPWR", "FROTO", "GENIL", "GESAN", "GWIND", "HKTM", 
-    "HUNER", "INVEO", "IZMDC", "JANTS", "KCAER", "KLKIM", "KNFRT", 
-    "MIATK", "MOBTL", "NATEN", "ODAS", "OTKAR", "OYLUM", "PENTA", 
-    "QUAGR", "RUBNS", "SDTTR", "SMRTG", "SNGYO", "SOKM", "SUWEN", 
-    "TATGD", "VBTYZ", "YEOTK", "YYLGD"
-]
+# Listeleri Yükle
+TUM_HISSELER = bist_listesini_guncelle()
+BIST_30_YEDEK = [x for x in TUM_HISSELER if x in ["AKBNK", "GARAN", "THYAO", "ASELS", "EREGL", "BIMAS", "TUPRS", "KCHOL", "SAHOL", "SISE", "ISCTR", "YKBNK", "FROTO", "TOASO", "TCELL", "PETKM", "KOZAL", "KRDMD", "ENKAI", "PGSUS", "ASTOR", "SASA", "HEKTS", "ALARK", "EKGYO", "GUBRF", "OYAKC", "KONTR", "DOAS", "BRSAN"]]
 
-BIST_100_EK = ["AEFES", "AGHOL", "AHGAZ", "AKFGY", "AKSA", "ALGYO", "BERA", "CANTE", "CIMSA", "ENJSA", "HALKB", "ISGYO", "MAVI", "MGROS", "TKFEN", "TTKOM", "ULKER", "VAKBN", "VESBE", "ZOREN"]
-BIST_100 = sorted(list(set(BIST_30 + BIST_100_EK)))
-
-# --- FONKSİYONLAR ---
+# --- DİĞER FONKSİYONLAR ---
 @st.cache_data(ttl=600) 
 def verileri_getir(sembol):
     if not sembol.endswith(".IS"):
@@ -61,7 +86,7 @@ def temel_bilgileri_getir(sembol):
             "F/K": info.get("trailingPE", "Yok"),
             "PD/DD": info.get("priceToBook", "Yok"),
             "Temettü": info.get("dividendYield", 0),
-            "Beta": info.get("beta", "Yok") # Risk ölçümü için Beta
+            "Beta": info.get("beta", "Yok")
         }
     except:
         return None
@@ -88,7 +113,7 @@ with st.sidebar:
     <div style="background-color:#1E1E1E; padding:15px; border-radius:10px; border:1px solid #333;">
         <h3 style="color:white; margin:0;">Mustafa Enes KORKMAZOĞLU</h3>
         <p style="color:#888; margin:5px 0;">🎓 NEÜ İktisat 3. Sınıf</p>
-        <p style="color:#00CC96; font-weight:bold;">🚀 Borsa Simülasyonu PRO</p>
+        <p style="color:#00CC96; font-weight:bold;">🚀 Borsa Simülasyonu V4.0</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -99,18 +124,25 @@ with st.sidebar:
     st.divider()
 
     st.header("🔍 Hisse Seçimi")
-    # YENİ KATEGORİ EKLENDİ
-    secim_modu = st.radio("Kategori:", ["💎 Gizli Fırsatlar (Keşif)", "BIST 30", "BIST 100", "Manuel Arama"])
+    
+    # Kullanıcıya bilgi veriyoruz
+    if len(TUM_HISSELER) > 90:
+        st.success(f"✅ Sistem Online: {len(TUM_HISSELER)} Hisse Güncellendi")
+    else:
+        st.warning("⚠️ Otomatik Güncelleme Kapalı (Yedek Liste Aktif)")
+
+    secim_modu = st.radio("Kategori:", ["💎 Gizli Fırsatlar (Keşif)", "BIST 30", "Tüm Hisseler (Otomatik)", "Manuel Arama"])
     
     if secim_modu == "Manuel Arama":
         hisse_input = st.text_input("Hisse Kodu Girin", "THYAO").upper()
     elif secim_modu == "BIST 30":
-        hisse_input = st.selectbox("BIST 30 Devleri", BIST_30)
+        hisse_input = st.selectbox("BIST 30 Devleri", sorted(BIST_30_YEDEK))
     elif secim_modu == "💎 Gizli Fırsatlar (Keşif)":
-        hisse_input = st.selectbox("Potansiyelli Yıldızlar", sorted(KESIF_LISTESI))
-        st.caption("ℹ️ Bu liste büyüme potansiyeli yüksek teknoloji, enerji ve sanayi hisselerinden seçilmiştir.")
+        # Keşif listesini de dinamik filtreden geçirebiliriz ama şimdilik sabit kalsın
+        KESIF = ["ALFAS", "BIOEN", "CWENE", "EGEEN", "EUPWR", "GESAN", "GWIND", "KONYA", "MIATK", "ODAS", "OTKAR", "OYAKC", "PENTA", "QUAGR", "REEDR", "SDTTR", "SMRTG", "SOKM", "YEOTK"]
+        hisse_input = st.selectbox("Potansiyelli Yıldızlar", sorted(KESIF))
     else:
-        hisse_input = st.selectbox("BIST 100 Geneli", BIST_100)
+        hisse_input = st.selectbox("BIST 100 Geneli", TUM_HISSELER)
     
     st.subheader("🎨 Grafik Seçenekleri")
     goster_sma50 = st.checkbox("SMA 50 (Turuncu)", value=True)
@@ -139,10 +171,9 @@ if st.session_state.analiz_aktif:
         if df.empty:
             st.error("Veri bulunamadı! Lütfen kodu kontrol edin.")
         else:
-            # --- RİSK HESAPLAMASI (Volatilite) ---
-            # Son 30 günlük getiri oynaklığı
+            # RİSK
             getiriler = df['Close'].pct_change().dropna()
-            volatilite = getiriler.std() * (252 ** 0.5) * 100 # Yıllıklandırılmış Volatilite
+            volatilite = getiriler.std() * (252 ** 0.5) * 100
             
             risk_durumu = "ORTA"
             risk_renk = "off"
@@ -153,13 +184,12 @@ if st.session_state.analiz_aktif:
                 risk_durumu = "DÜŞÜK 🛡️"
                 risk_renk = "normal"
 
-            # --- ÜST KARTLAR ---
+            # ÜST KARTLAR
             son_fiyat = df['Close'].iloc[-1]
             degisim = ((son_fiyat - df['Close'].iloc[-2]) / df['Close'].iloc[-2]) * 100
             
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Son Fiyat", f"{son_fiyat:.2f} ₺", f"%{degisim:.2f}")
-            
             c2.metric("Risk Seviyesi", risk_durumu, f"%{volatilite:.1f} Volatilite", delta_color=risk_renk)
             
             if info:
