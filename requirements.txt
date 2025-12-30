@@ -1,13 +1,14 @@
 streamlit
 yfinance
 pandas
-pandas_ta
+pandas-ta
 feedparser
 plotly
+pystan==2.19.1.1
 prophet
 lxml
 html5lib
-bs4
+beautifulsoup4
 cvxpy
 scipy
 numpy
