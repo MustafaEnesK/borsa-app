@@ -10,7 +10,14 @@ from datetime import datetime, timedelta
 # --- SAYFA AYARLARI ---
 st.set_page_config(page_title="NEÜ Borsa Simülasyonu", page_icon="📈", layout="wide")
 
-# --- SABİT LİSTELER (BIST 30 ve BIST 100'den Örnekler) ---
+# --- SESSION STATE (HAFIZA) AYARLARI ---
+# Sayfa yenilense bile analizin kaybolmaması için hafıza oluşturuyoruz
+if 'analiz_aktif' not in st.session_state:
+    st.session_state.analiz_aktif = False
+if 'secilen_hisse' not in st.session_state:
+    st.session_state.secilen_hisse = ""
+
+# --- LİSTELER ---
 BIST_30 = [
     "AKBNK", "ALARK", "ARCLK", "ASELS", "ASTOR", "BIMAS", "BRSAN", "DOAS",
     "EKGYO", "ENKAI", "EREGL", "FROTO", "GARAN", "GUBRF", "HEKTS", "ISCTR",
@@ -47,7 +54,7 @@ def temel_bilgileri_getir(sembol):
     except:
         return None
 
-def prophet_tahmin(df, gun_sayisi=65): # En az 60 gün lazım
+def prophet_tahmin(df, gun_sayisi=65):
     df_prophet = df[['Date', 'Close']].rename(columns={'Date': 'ds', 'Close': 'y'})
     m = Prophet(daily_seasonality=True)
     m.fit(df_prophet)
@@ -63,9 +70,8 @@ def haberleri_getir(saf_kod):
     except:
         return []
 
-# --- YAN MENÜ TASARIMI ---
+# --- YAN MENÜ ---
 with st.sidebar:
-    # 1. KİŞİSEL KART
     st.markdown("""
     <div style="background-color:#1E1E1E; padding:15px; border-radius:10px; border:1px solid #333;">
         <h3 style="color:white; margin:0;">Mustafa Enes KORKMAZOĞLU</h3>
@@ -80,40 +86,44 @@ with st.sidebar:
 
     st.divider()
 
-    # 2. HİSSE SEÇİM MENÜSÜ (YENİ!)
     st.header("🔍 Hisse Seçimi")
     secim_modu = st.radio("Liste Seçiniz:", ["Manuel Arama", "BIST 30", "BIST 100"])
     
     if secim_modu == "Manuel Arama":
-        hisse_kodu = st.text_input("Hisse Kodu Girin", "THYAO").upper()
+        hisse_input = st.text_input("Hisse Kodu Girin", "THYAO").upper()
     elif secim_modu == "BIST 30":
-        hisse_kodu = st.selectbox("BIST 30 Hissesi Seç", BIST_30)
+        hisse_input = st.selectbox("BIST 30 Hissesi Seç", BIST_30)
     else:
-        hisse_kodu = st.selectbox("BIST 100 Hissesi Seç", BIST_100)
+        hisse_input = st.selectbox("BIST 100 Hissesi Seç", BIST_100)
     
-    # 3. GÖRSEL AYARLAR
     st.subheader("🎨 Grafik Seçenekleri")
     goster_sma50 = st.checkbox("SMA 50 (Turuncu)", value=True)
     goster_sma200 = st.checkbox("SMA 200 (Mavi)", value=True)
     goster_bollinger = st.checkbox("Bollinger Bantları", value=False)
     
     st.divider()
-    analiz_butonu = st.button("Analizi Başlat 🚀", type="primary", use_container_width=True)
+    # Butona basınca Session State güncellenir
+    if st.button("Analizi Başlat 🚀", type="primary", use_container_width=True):
+        st.session_state.analiz_aktif = True
+        st.session_state.secilen_hisse = hisse_input
+        st.cache_data.clear()
 
 # --- ANA SAYFA ---
 st.title("📈 Borsa İstanbul Yapay Zeka Analisti")
-st.caption(f"Hoş geldin Mustafa Enes. Seçilen Hisse: {hisse_kodu}")
 
-if analiz_butonu:
-    st.cache_data.clear()
+# Eğer butona basıldıysa VE hisse seçildiyse ekranı göster
+if st.session_state.analiz_aktif:
+    hisse_kodu = st.session_state.secilen_hisse
     saf_kod = hisse_kodu.replace(".IS", "")
+    
+    st.caption(f"Analiz Edilen Hisse: **{hisse_kodu}**")
     
     with st.spinner('Veriler ve Yapay Zeka Tahminleri Hazırlanıyor...'):
         df = verileri_getir(hisse_kodu)
         info = temel_bilgileri_getir(hisse_kodu)
         
         if df.empty:
-            st.error("Veri bulunamadı!")
+            st.error("Veri bulunamadı! Lütfen kodu kontrol edin.")
         else:
             # ÜST KARTLAR
             son_fiyat = df['Close'].iloc[-1]
@@ -128,7 +138,7 @@ if analiz_butonu:
                 c3.metric("PD/DD", f"{info['PD/DD']}")
                 c4.metric("Temettü", fmt_temettu)
 
-            # --- GRAFİK ---
+            # GRAFİK
             st.subheader(f"📊 {saf_kod} Teknik Analiz")
             fig = go.Figure()
             fig.add_trace(go.Candlestick(x=df['Date'], open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Fiyat'))
@@ -146,18 +156,15 @@ if analiz_butonu:
             fig.update_layout(height=500, xaxis_rangeslider_visible=False, template="plotly_dark", margin=dict(l=0, r=0, t=30, b=0))
             st.plotly_chart(fig, use_container_width=True)
 
-            # --- TAHMİN VE SİMÜLATÖR (YENİ!) ---
+            # SİMÜLATÖR VE TAHMİN
             st.divider()
             col_tahmin, col_sim = st.columns([1, 1])
 
-            # Yapay Zeka Tahmini Hesapla
             try:
                 fcast = prophet_tahmin(df, 65)
-                # Gelecek verileri al
                 future_data = fcast[fcast['ds'] > df['Date'].iloc[-1]].copy()
                 future_data.reset_index(drop=True, inplace=True)
                 
-                # Hedef Günler: 15, 30, 60
                 t15 = future_data.iloc[14]['yhat'] if len(future_data) > 14 else 0
                 t30 = future_data.iloc[29]['yhat'] if len(future_data) > 29 else 0
                 t60 = future_data.iloc[59]['yhat'] if len(future_data) > 59 else 0
@@ -165,8 +172,6 @@ if analiz_butonu:
                 with col_tahmin:
                     st.subheader("🔮 Yapay Zeka Beklentisi")
                     st.info("AI modelinin geçmiş verilere dayanarak yaptığı fiyat öngörüsüdür.")
-                    
-                    # Tahmin Tablosu
                     t_data = {
                         "Vade": ["15 Gün Sonra", "30 Gün Sonra", "60 Gün Sonra"],
                         "Tahmini Fiyat": [f"{t15:.2f} ₺", f"{t30:.2f} ₺", f"{t60:.2f} ₺"],
@@ -178,7 +183,6 @@ if analiz_butonu:
                     }
                     st.table(pd.DataFrame(t_data))
                     
-                    # Mini Grafik (Gelecek)
                     fig_mini = go.Figure()
                     fig_mini.add_trace(go.Scatter(x=future_data['ds'], y=future_data['yhat'], mode='lines', line=dict(color='#00CC96', width=2), name='Tahmin'))
                     fig_mini.update_layout(height=200, margin=dict(l=0,r=0,t=0,b=0), template="plotly_dark", showlegend=False)
@@ -186,33 +190,27 @@ if analiz_butonu:
 
                 with col_sim:
                     st.subheader("💰 Yatırım Simülatörü")
-                    st.success("Cebindeki parayı gir, gelecekteki olası değerini gör.")
+                    st.success("Cebindeki parayı gir, Enter'a bas.")
                     
-                    # Para Girişi
+                    # BURASI DÜZELTİLDİ: Session State sayesinde burası çalışınca sayfa kapanmayacak
                     ana_para = st.number_input("Yatırılacak Tutar (TL)", min_value=1000, value=10000, step=1000)
                     
-                    st.write(f"**{ana_para:,.0f} TL** ile {saf_kod} alsaydın:")
+                    st.write(f"**{ana_para:,.0f} TL** ile bugün {saf_kod} alınırsa:")
                     
-                    # Hesaplamalar
                     kar15 = ana_para * (t15 / son_fiyat)
                     kar30 = ana_para * (t30 / son_fiyat)
                     kar60 = ana_para * (t60 / son_fiyat)
                     
                     c_sim1, c_sim2, c_sim3 = st.columns(3)
                     
-                    # 15 Gün
                     renk15 = "off" if kar15 > ana_para else "inverse"
-                    c_sim1.metric("15 Gün Sonra", f"{kar15:,.0f} ₺", f"{kar15-ana_para:,.0f} ₺", delta_color=renk15)
+                    c_sim1.metric("15 Gün", f"{kar15:,.0f} ₺", f"{kar15-ana_para:,.0f} ₺", delta_color=renk15)
                     
-                    # 30 Gün
                     renk30 = "off" if kar30 > ana_para else "inverse"
-                    c_sim2.metric("30 Gün Sonra", f"{kar30:,.0f} ₺", f"{kar30-ana_para:,.0f} ₺", delta_color=renk30)
+                    c_sim2.metric("30 Gün", f"{kar30:,.0f} ₺", f"{kar30-ana_para:,.0f} ₺", delta_color=renk30)
                     
-                    # 60 Gün
                     renk60 = "off" if kar60 > ana_para else "inverse"
-                    c_sim3.metric("60 Gün Sonra", f"{kar60:,.0f} ₺", f"{kar60-ana_para:,.0f} ₺", delta_color=renk60)
-                    
-                    st.caption("*Simülasyon sonuçları yatırım tavsiyesi değildir. AI tahminine dayanır.")
+                    c_sim3.metric("60 Gün", f"{kar60:,.0f} ₺", f"{kar60-ana_para:,.0f} ₺", delta_color=renk60)
 
             except Exception as e:
                 st.warning(f"Simülasyon hesaplanamadı: {e}")
@@ -225,5 +223,5 @@ if analiz_butonu:
             if news:
                 for i, h in enumerate(news):
                     cols[i % 2].info(f"[{h.title}]({h.link})")
-            else:
-                st.write("Haber bulunamadı.")
+else:
+    st.info("👈 Analize başlamak için sol menüden bir hisse seçin ve 'Analizi Başlat' butonuna basın.")
